@@ -41,7 +41,7 @@ class RealGeminiNanoClient(private val context: Context) : GeminiNanoClient {
                         return@withContext "Gemini Nano model is downloading. Please try again in 2 minutes."
                     }
                     3 -> return@withContext "Model is still downloading..."
-                    0 -> return@withContext "Gemini Nano not supported. Check S24 Advanced Intelligence settings."
+                    0 -> return@withContext "Gemini Nano status 0: Please check AICore Settings in Developer Options."
                 }
 
                 // Explicitly warmup to bind the service
@@ -59,12 +59,12 @@ class RealGeminiNanoClient(private val context: Context) : GeminiNanoClient {
                 Log.e("RealGeminiNanoClient", "Inference failed", e)
                 val msg = e.message ?: ""
                 if (msg.contains("606") || msg.contains("636")) {
-                    "Error: Gemini Nano 'Feature 636' is not active on your S24 Ultra.\n\n" +
-                    "S24 ULTRA FIX:\n" +
-                    "1. Search 'Google AICore' in Play Store & update.\n" +
-                    "2. Settings > Advanced Features > Advanced Intelligence > Samsung Keyboard.\n" +
-                    "3. Tap 'Style and grammar'. If it asks to 'Download', do it.\n" +
-                    "4. RESTART phone."
+                    "AICore status check: Feature 636 is initializing on your device.\n\n" +
+                    "PIXEL 8 SETUP:\n" +
+                    "1. Open Settings -> System -> Developer options.\n" +
+                    "2. Enable 'AICore Settings' / 'Enable on-device GenAI features'.\n" +
+                    "3. Open Google Play Store and ensure 'Android System AICore' is updated.\n" +
+                    "4. If still downloading, give AICore 2 minutes to initialize on NPU."
                 } else {
                     "Error: $msg"
                 }

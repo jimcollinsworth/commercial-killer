@@ -29,35 +29,48 @@ class ChatViewModel @Inject constructor(
     private val _useRealNano = MutableStateFlow(false)
     val useRealNano: StateFlow<Boolean> = _useRealNano.asStateFlow()
 
+    private val _latestDetectedObjects = MutableStateFlow<List<String>>(emptyList())
+    val latestDetectedObjects: StateFlow<List<String>> = _latestDetectedObjects.asStateFlow()
+
     fun setUseRealNano(value: Boolean) {
         _useRealNano.value = value
     }
 
-    fun sendMessage(text: String) {
-        if (text.isBlank()) return
+    fun updateDetectedObjects(objects: List<String>) {
+        _latestDetectedObjects.value = objects
+    }
+
+    fun askAgent(userPrompt: String) {
+        if (userPrompt.isBlank() || _isGenerating.value) return
+        
         viewModelScope.launch {
-            repository.addMessage(text, isFromUser = true)
+            // 1. Post user message to stream
+            repository.addMessage(userPrompt, isFromUser = true)
+            
+            // 2. Start generation
+            _isGenerating.value = true
+            
+            // 3. Process prompt via AI Orchestrator with current real-time vision context
+            val response = orchestrator.processPrompt(
+                userPrompt = userPrompt,
+                detectedObjects = _latestDetectedObjects.value,
+                useRealNano = _useRealNano.value
+            )
+            
+            // 4. Post agent response & IR actions to stream
+            repository.addMessage(response, isFromUser = false)
+            _draft.value = response
+            _isGenerating.value = false
         }
     }
 
+    fun sendMessage(text: String) {
+        askAgent(text)
+    }
+
     fun generateReply(currentMessages: List<MessageEntity>) {
-        if (currentMessages.isEmpty()) return
-        
-        viewModelScope.launch {
-            _isGenerating.value = true
-            
-            // Format history for the agent
-            val history = currentMessages.map { 
-                val sender = if (it.isFromUser) "User" else "Agent"
-                "$sender: ${it.text}"
-            }
-            
-            // Invoke the AI Orchestrator
-            val generatedDraft = orchestrator.summarizeAndDraft(history, _useRealNano.value)
-            
-            _draft.value = generatedDraft
-            _isGenerating.value = false
-        }
+        val lastMessage = currentMessages.lastOrNull()?.text ?: "Analyze current video frame"
+        askAgent(lastMessage)
     }
 
     fun updateDraft(text: String) {

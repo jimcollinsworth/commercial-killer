@@ -36,6 +36,16 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.material:material-icons-extended")
+
+    // CameraX
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+
+    // On-Device Vision Intelligence (ML Kit)
+    implementation(libs.mlkit.image.labeling)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(project(":tooling"))
