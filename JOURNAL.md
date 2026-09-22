@@ -159,4 +159,48 @@
   - Python 3.12.10
 
 ---
+
+## 2026-09-22: Intent-Based ADB Audio Loading & Broadcast Test Clips Verification
+
+> [!NOTE] User Instructions & Guidance:
+> - Kill the emulator.
+> - Implement intent-based ADB file loading so files can be injected via `adb shell am start ...`.
+> - Download and verify broadcast test clips from Internet Archive.
+> - Apply skills `/android-profiler`, `/android-cli`, `/antigravity-guide`, and `/tool-discovery-policy`.
+
+### Problem & Diagnosis
+- Automating file benchmarking via the Android system file picker GUI required manual user clicks or fragile touch coordinate scripts.
+- Actual broadcast recordings with commercial pods were needed locally for testing without committing large binary assets to Git.
+
+### Root Cause & Technical Analysis
+- `MainActivity` did not inspect incoming `Intent` extras or implement `onNewIntent`, preventing external injection of media paths via ADB.
+- `AudioFileDecoder.kt` only accepted `content://` URIs; raw file paths and `file://` schemes required `ParcelFileDescriptor.open(file, MODE_READ_ONLY)`.
+- Rule 17 mandates that large media files (> 500 KB) must not be committed to Git.
+
+### Solution & Standard Procedure
+1. Terminated emulator process cleanly via `adb emu kill`.
+2. Updated `MainActivity.kt` to inspect `intent.getStringExtra("audio_file")` and handle `onNewIntent` to pass URIs to `AudioWorkbenchEngine.loadAudioFile()`.
+3. Updated `Navigation.kt` to pass `AudioWorkbenchEngine` into `MainScreen`.
+4. Updated `AndroidManifest.xml` with `singleTop` launch mode and media storage permissions.
+5. Updated `AudioFileDecoder.kt` to support both `file://` and `content://` URIs via `ParcelFileDescriptor`.
+6. Added `test_assets/` and media file extensions (`*.wav`, `*.mp3`, `*.mp4`, `*.ogg`, `*.aac`, `*.flac`) to `.gitignore`.
+7. Downloaded and verified two real broadcast clips from Internet Archive into `test_assets/`:
+   - `gunsmoke_broadcast_with_ad.mp3` (1.5 MB)
+   - `frosted_flakes_1976_ad.mp4` (2.0 MB)
+8. Incremented project version to `versionCode = 4`, `versionName = "1.3"`.
+9. Verified build via `gradlew.bat testDebugUnitTest assembleDebug` (**BUILD SUCCESSFUL in 14s**).
+
+### Token & LLM Resource Log
+- **Session ID**: `73aa8283-cf2b-4599-90f0-6ecec254e26f`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\73aa8283-cf2b-4599-90f0-6ecec254e26f\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Android SDK 36 Build-Tools 36.0.0
+  - ADB CLI (`adb emu kill`, `adb devices`)
+  - JDK 21 OpenJDK (`C:\Program Files\Android\Android Studio\jbr`)
+  - Gradle 9.1.0 Daemon
+  - Python 3.12.10
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*

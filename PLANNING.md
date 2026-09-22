@@ -17,6 +17,8 @@
 ## Future Increments
 
 - [x] File selector for local audio/video file benchmarking (multi-format audio loader: WAV, MP3, AAC, M4A, FLAC, OGG, OPUS)
+- [x] Intent-based direct ADB audio file loading (`adb shell am start ... --es audio_file <path>`)
+- [x] Download & verification of real broadcast test clips with commercials (`test_assets/`)
 - [x] MediaPipe & LiteRT-ML / TFLite parallel audio classifier stream (Hugging Face open-weights models)
 - [x] Realistic acoustic broadcast simulation (multi-formant speech, silence dips, loudness compression)
 - [ ] MediaPipe & LiteRT-ML video model execution pipeline integration

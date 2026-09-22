@@ -15,3 +15,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+test_assets/
+*.wav
+*.mp3
+*.mp4
+*.ogg
+*.aac
+*.flac

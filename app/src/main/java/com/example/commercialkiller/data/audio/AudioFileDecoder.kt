@@ -28,8 +28,13 @@ class AudioFileDecoder {
     suspend fun decode(context: Context, uri: Uri): DecodedAudio = withContext(Dispatchers.IO) {
         val fileName = getFileName(context, uri) ?: "audio_track"
         val extractor = MediaExtractor()
-        val pfd = context.contentResolver.openFileDescriptor(uri, "r")
-            ?: throw IllegalArgumentException("Cannot open file descriptor for URI: $uri")
+        val pfd = if (uri.scheme == "file" || uri.scheme == null) {
+            val path = uri.path ?: uri.toString()
+            val file = java.io.File(path)
+            android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+        } else {
+            context.contentResolver.openFileDescriptor(uri, "r")
+        } ?: throw IllegalArgumentException("Cannot open file descriptor for URI: $uri")
 
         try {
             extractor.setDataSource(pfd.fileDescriptor)
