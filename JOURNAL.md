@@ -394,7 +394,57 @@
   - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.7.*
+
+## 2026-09-22: Real-time Audio Playback Fix, Automated TV Muting Pipeline & Unified TvControlManager
+
+> [!NOTE] User Instructions & Guidance:
+> - The test step 1/4 etc. seems completely unresponsive.
+> - The webhook test had a successful response and muted the TV, then it successfully unmuted.
+> - The mute works, but it's not muting during real-time processing.
+> - The real-time sound doesn't play the file when using a file.
+
+### Problem & Diagnosis
+1. **Unresponsive Step/Test Wizard**: The pairing wizard only triggered raw IR transmissions via `ConsumerIrManager`. On phones lacking an IR blaster, it failed silently without feedback, while the Smart TV was controllable over Wi-Fi via Webhooks.
+2. **Missing Real-Time Automation**: Muting/unmuting actions were not connected to the real-time audio processing loop or classifier detections in `AudioWorkbenchEngine`.
+3. **Audio File Playback Stutter/Silence**: `runFileLoop()` was streaming 512-sample chunks (32ms) every 100ms interval using `PCM_FLOAT`, resulting in buffer starvation and device incompatibilities.
+
+### Root Cause & Technical Analysis
+- Settings and Webhook URLs were stored only as ephemeral Compose state and were never persisted or shared with `AudioWorkbenchEngine`.
+- Audio timing in `runFileLoop()` did not match elapsed wall-clock time (`intervalMs * sampleRate / 1000`). `PCM_16BIT` conversion was required for 100% universal hardware playback.
+- No unified TV control layer existed to bridge Webhook and IR blaster channels based on user preferences.
+
+### Solution & Technical Implementation
+1. **`TvControlManager.kt`**:
+   - Created central control manager persisting settings in Android `SharedPreferences` (Webhook URL, Control Method: `WEBHOOK`, `IR`, `BOTH`, selected IR set, auto-mute enabled switch).
+   - Unified `sendMute()` and `sendUnmute()` dispatching across active channels with structured `TvActionResult` feedback.
+2. **`AudioWorkbenchEngine.kt`**:
+   - **Real-time Sound Playback**: Rebuilt `AudioTrack` output in `runFileLoop()` with `ENCODING_PCM_16BIT` and synchronous chunk calculation (`samplesToAdvance = sampleRate * interval / 1000`), ensuring continuous, smooth playback aloud through speakers at exact 1.0x pitch and speed.
+   - **Automated Muting Pipeline**: Integrated `TvControlManager` to automatically trigger `sendMute()` when commercial acoustic shifts or high-confidence classifier detections occur, and `sendUnmute()` with a debounce window once program content resumes.
+   - Exposed `isTvMuted` and `tvControlMethod` in `WorkbenchState`.
+3. **`IrSettingsScreen.kt`**:
+   - Upgraded to full TV Control & Automation panel with segmented Control Method selector (`SMART TV WEBHOOK`, `IR BLASTER`, `BOTH`).
+   - Wired "TEST MUTE", "TEST UNMUTE", and Step Wizard (`↻`) to trigger the active control channel and log status codes directly in the Action Console.
+   - Added persistent Auto-Mute switch.
+4. **`MainScreen.kt` & `MainActivity.kt`**:
+   - Added dynamic `TV MUTED [METHOD]` / `TV ACTIVE [METHOD]` status badge to the main header.
+   - Injected `applicationContext` to `AudioWorkbenchEngine`.
+5. **Unit Tests & Verification**:
+   - Created `TvControlManagerTest.kt` (**25/25 passing unit tests**).
+   - Compiled debug APK via `assembleDebug` (**BUILD SUCCESSFUL in 12s**).
+   - Incremented version to `v1.7` (versionCode 7).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android `AudioTrack` 16-bit PCM streaming
+  - Android `SharedPreferences`
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+  - Git CLI (`git checkout -b feature/realtime-automute-sound`)
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
 
 
 

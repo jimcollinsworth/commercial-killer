@@ -9,6 +9,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.net.Uri
+import com.example.commercialkiller.data.action.TvControlManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,6 +47,8 @@ data class WorkbenchState(
     val threshold: Float = 0.05f,
     val currentDistance: Float = 0f,
     val isEventTriggered: Boolean = false,
+    val isTvMuted: Boolean = false,
+    val tvControlMethod: String = "WEBHOOK",
     val waveform: FloatArray = FloatArray(256),
     val spectrogramHistory: List<FloatArray> = emptyList(),
     val eventLogs: List<WorkbenchEvent> = emptyList(),
@@ -61,7 +64,7 @@ data class WorkbenchState(
 
 /**
  * Core engine managing audio capture, file playback, Mel-spectrogram calculation,
- * and parallel on-device audio classification.
+ * parallel on-device audio classification, and automatic TV muting/unmuting.
  */
 class AudioWorkbenchEngine(
     private val context: Context? = null
@@ -70,13 +73,17 @@ class AudioWorkbenchEngine(
     private val comparator = SpectrogramComparator()
     private val classifier = AudioClassifierEngine(context)
     private val fileDecoder = AudioFileDecoder()
+    val tvControlManager = TvControlManager(context)
 
     private var loadedAudio: DecodedAudio? = null
     private var fileSampleOffset = 0
+    private var isTvCurrentlyMuted = false
+    private var programConsecutiveFrames = 0
 
     private val _state = MutableStateFlow(
         WorkbenchState(
-            activeClassifierModel = classifier.getActiveModelName()
+            activeClassifierModel = classifier.getActiveModelName(),
+            tvControlMethod = tvControlManager.controlMethod.name
         )
     )
     val state: StateFlow<WorkbenchState> = _state.asStateFlow()
@@ -89,10 +96,15 @@ class AudioWorkbenchEngine(
         stop()
 
         comparator.reset()
+        isTvCurrentlyMuted = false
+        programConsecutiveFrames = 0
+
         _state.value = _state.value.copy(
             isRunning = true,
             sourceMode = sourceMode,
-            activeClassifierModel = classifier.getActiveModelName()
+            activeClassifierModel = classifier.getActiveModelName(),
+            tvControlMethod = tvControlManager.controlMethod.name,
+            isTvMuted = false
         )
 
         engineJob = scope.launch {
@@ -111,7 +123,13 @@ class AudioWorkbenchEngine(
     fun stop() {
         engineJob?.cancel()
         engineJob = null
-        _state.value = _state.value.copy(isRunning = false, isEventTriggered = false)
+        if (isTvCurrentlyMuted && tvControlManager.isAutoMuteEnabled) {
+            scope.launch {
+                tvControlManager.sendUnmute()
+            }
+        }
+        isTvCurrentlyMuted = false
+        _state.value = _state.value.copy(isRunning = false, isEventTriggered = false, isTvMuted = false)
     }
 
     fun setThreshold(newThreshold: Float) {
@@ -157,6 +175,54 @@ class AudioWorkbenchEngine(
         )
     }
 
+    private fun handleAutoMuting(
+        isCommercialActive: Boolean,
+        logs: ArrayDeque<WorkbenchEvent>,
+        dateFormat: SimpleDateFormat,
+        distance: Float,
+        threshold: Float
+    ) {
+        if (!tvControlManager.isAutoMuteEnabled) return
+
+        if (isCommercialActive) {
+            programConsecutiveFrames = 0
+            if (!isTvCurrentlyMuted) {
+                isTvCurrentlyMuted = true
+                scope.launch {
+                    val result = tvControlManager.sendMute()
+                    val event = WorkbenchEvent(
+                        timestamp = dateFormat.format(Date()),
+                        distance = distance,
+                        threshold = threshold,
+                        description = "⚡ AUTO-MUTE TRIGGERED (${result.method.name}: ${result.message})"
+                    )
+                    if (logs.size >= 50) logs.removeFirst()
+                    logs.addLast(event)
+                }
+            }
+        } else {
+            // Require 10 consecutive non-commercial frames (~1 sec) before unmuting
+            if (isTvCurrentlyMuted) {
+                programConsecutiveFrames++
+                if (programConsecutiveFrames >= 10) {
+                    isTvCurrentlyMuted = false
+                    programConsecutiveFrames = 0
+                    scope.launch {
+                        val result = tvControlManager.sendUnmute()
+                        val event = WorkbenchEvent(
+                            timestamp = dateFormat.format(Date()),
+                            distance = distance,
+                            threshold = threshold,
+                            description = "🔊 AUTO-UNMUTE TRIGGERED (${result.method.name}: ${result.message})"
+                        )
+                        if (logs.size >= 50) logs.removeFirst()
+                        logs.addLast(event)
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Realistic acoustic broadcast simulation:
      * - Multi-formant speech simulation (F1=500Hz, F2=1500Hz, F3=2500Hz) with natural cadence
@@ -200,11 +266,11 @@ class AudioWorkbenchEngine(
                     samples[i] = ((chord * 0.7 + percussion) * 0.85).toFloat().coerceIn(-1.0f, 1.0f)
                 }
             } else {
-                // Program segment: Multi-formant speech/dialogue simulation (F0=130Hz pitch, F1=500, F2=1500, F3=2500)
+                // Program segment: Multi-formant speech/dialogue simulation
                 for (i in 0 until chunkSize) {
                     val sampleIdx = tick * chunkSize + i
                     val t = sampleIdx.toDouble() / sampleRate
-                    val speechCadence = (sin(2.0 * PI * 2.5 * t) + 1.0) * 0.5 // 2.5 Hz syllable modulation
+                    val speechCadence = (sin(2.0 * PI * 2.5 * t) + 1.0) * 0.5
                     val pitch = sin(2.0 * PI * 130.0 * t)
                     val f1 = sin(2.0 * PI * 500.0 * t) * 0.4
                     val f2 = sin(2.0 * PI * 1500.0 * t) * 0.25
@@ -244,6 +310,15 @@ class AudioWorkbenchEngine(
                 logs.addLast(event)
             }
 
+            // Automatic TV Mute / Unmute Handler
+            handleAutoMuting(
+                isCommercialActive = isCommercialSegment,
+                logs = logs,
+                dateFormat = dateFormat,
+                distance = compResult.distance,
+                threshold = compResult.threshold
+            )
+
             // Downsampled waveform for oscilloscope (256 samples)
             val waveformView = FloatArray(256)
             for (i in 0 until 256) {
@@ -255,6 +330,8 @@ class AudioWorkbenchEngine(
                 spectrogramHistory = history.toList(),
                 currentDistance = compResult.distance,
                 isEventTriggered = compResult.isSignificant,
+                isTvMuted = isTvCurrentlyMuted,
+                tvControlMethod = tvControlManager.controlMethod.name,
                 eventLogs = logs.toList().reversed(),
                 classifierScores = classificationScores
             )
@@ -276,8 +353,9 @@ class AudioWorkbenchEngine(
             val minBufSize = AudioTrack.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_FLOAT
-            )
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(8192)
+
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -287,14 +365,16 @@ class AudioWorkbenchEngine(
                 )
                 .setAudioFormat(
                     AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(sampleRate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(minBufSize.coerceAtLeast(4096))
+                .setBufferSizeInBytes(minBufSize * 2)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
+
+            audioTrack.setVolume(1.0f)
             audioTrack.play()
         } catch (e: Exception) {
             e.printStackTrace()
@@ -310,23 +390,34 @@ class AudioWorkbenchEngine(
                     fileSampleOffset = 0
                 }
 
+                // Calculate samples corresponding to the elapsed interval time
+                val samplesToAdvance = ((sampleRate.toLong() * interval) / 1000L).toInt().coerceAtLeast(chunkSize)
                 val remaining = totalSamples - fileSampleOffset
-                val currentChunkSize = chunkSize.coerceAtMost(remaining)
-                val samples = FloatArray(chunkSize)
-                System.arraycopy(audio.samples, fileSampleOffset, samples, 0, currentChunkSize)
-                fileSampleOffset += currentChunkSize
+                val actualSamplesCount = samplesToAdvance.coerceAtMost(remaining)
 
-                // Play audio chunk to speaker in real-time
-                if (currentChunkSize > 0 && audioTrack != null) {
-                    audioTrack.write(samples, 0, currentChunkSize, AudioTrack.WRITE_NON_BLOCKING)
+                // 1. Play entire interval audio block to speaker in real-time
+                if (actualSamplesCount > 0 && audioTrack != null) {
+                    val shortBuffer = ShortArray(actualSamplesCount)
+                    for (i in 0 until actualSamplesCount) {
+                        val sample = audio.samples[fileSampleOffset + i]
+                        shortBuffer[i] = (sample * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+                    }
+                    audioTrack.write(shortBuffer, 0, actualSamplesCount, AudioTrack.WRITE_BLOCKING)
                 }
+
+                // 2. Extract 512-sample analysis window for Mel-spectrogram & classifier
+                val analysisSamples = FloatArray(chunkSize)
+                val analysisCount = chunkSize.coerceAtMost(actualSamplesCount)
+                System.arraycopy(audio.samples, fileSampleOffset, analysisSamples, 0, analysisCount)
+
+                fileSampleOffset += actualSamplesCount
 
                 val progress = fileSampleOffset.toFloat() / totalSamples.coerceAtLeast(1)
                 val currentPosMs = (audio.durationMs * progress).toLong()
 
                 // Parallel Execution: Mel-Spectrogram + Audio Classifier
-                val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(samples) }
-                val classificationDeferred = scope.async { classifier.classify(samples) }
+                val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(analysisSamples) }
+                val classificationDeferred = scope.async { classifier.classify(analysisSamples) }
 
                 val melEnergies = melEnergiesDeferred.await()
                 val classificationScores = classificationDeferred.await()
@@ -346,9 +437,23 @@ class AudioWorkbenchEngine(
                     logs.addLast(event)
                 }
 
+                // Detect commercial from classifier scores or shift
+                val isCommercialScore = classificationScores.any { 
+                    it.label.contains("Commercial", ignoreCase = true) && it.score >= 0.35f
+                }
+                val isCommercialActive = isCommercialScore || compResult.isSignificant
+
+                handleAutoMuting(
+                    isCommercialActive = isCommercialActive,
+                    logs = logs,
+                    dateFormat = dateFormat,
+                    distance = compResult.distance,
+                    threshold = compResult.threshold
+                )
+
                 val waveformView = FloatArray(256)
                 for (i in 0 until 256) {
-                    waveformView[i] = samples[i * (chunkSize / 256)]
+                    waveformView[i] = analysisSamples[i * (chunkSize / 256)]
                 }
 
                 _state.value = _state.value.copy(
@@ -356,6 +461,8 @@ class AudioWorkbenchEngine(
                     spectrogramHistory = history.toList(),
                     currentDistance = compResult.distance,
                     isEventTriggered = compResult.isSignificant,
+                    isTvMuted = isTvCurrentlyMuted,
+                    tvControlMethod = tvControlManager.controlMethod.name,
                     eventLogs = logs.toList().reversed(),
                     classifierScores = classificationScores,
                     filePositionMs = currentPosMs,
@@ -371,7 +478,6 @@ class AudioWorkbenchEngine(
             } catch (ignored: Exception) {}
         }
     }
-
 
     @SuppressLint("MissingPermission")
     private suspend fun runLiveMicLoop() {
@@ -435,6 +541,20 @@ class AudioWorkbenchEngine(
                         logs.addLast(event)
                     }
 
+                    // Check live commercial probability
+                    val isCommercialScore = classificationScores.any { 
+                        it.label.contains("Commercial", ignoreCase = true) && it.score >= 0.35f
+                    }
+                    val isCommercialActive = isCommercialScore || compResult.isSignificant
+
+                    handleAutoMuting(
+                        isCommercialActive = isCommercialActive,
+                        logs = logs,
+                        dateFormat = dateFormat,
+                        distance = compResult.distance,
+                        threshold = compResult.threshold
+                    )
+
                     val waveformView = FloatArray(256)
                     for (i in 0 until 256) {
                         waveformView[i] = floatSamples[i * 2]
@@ -445,6 +565,8 @@ class AudioWorkbenchEngine(
                         spectrogramHistory = history.toList(),
                         currentDistance = compResult.distance,
                         isEventTriggered = compResult.isSignificant,
+                        isTvMuted = isTvCurrentlyMuted,
+                        tvControlMethod = tvControlManager.controlMethod.name,
                         eventLogs = logs.toList().reversed(),
                         classifierScores = classificationScores
                     )

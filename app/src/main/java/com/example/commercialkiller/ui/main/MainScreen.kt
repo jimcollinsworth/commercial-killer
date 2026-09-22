@@ -104,6 +104,8 @@ fun MainScreen(
             WorkbenchHeader(
                 isRunning = state.isRunning,
                 sourceMode = state.sourceMode,
+                isTvMuted = state.isTvMuted,
+                tvControlMethod = state.tvControlMethod,
                 onItemClick = onItemClick,
                 onToggleRunning = {
                     if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
@@ -317,6 +319,8 @@ fun MainScreen(
 private fun WorkbenchHeader(
     isRunning: Boolean,
     sourceMode: AudioSourceMode,
+    isTvMuted: Boolean,
+    tvControlMethod: String,
     onItemClick: (NavKey) -> Unit = {},
     onToggleRunning: () -> Unit,
     onSelectSource: (AudioSourceMode) -> Unit,
@@ -335,6 +339,26 @@ private fun WorkbenchHeader(
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (isTvMuted) Color(0xFFDC2626) else Color(0xFF1E293B),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = if (isTvMuted) "TV MUTED [$tvControlMethod]" else "TV ACTIVE [$tvControlMethod]",
+                            color = if (isTvMuted) Color.White else Color(0xFF38BDF8),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
 
             Row(
