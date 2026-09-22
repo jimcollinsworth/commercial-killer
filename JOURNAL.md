@@ -115,4 +115,48 @@
   - Remote: `https://github.com/jimcollinsworth/commercial-killer.git`
 
 ---
+
+## 2026-09-22: Multi-Format Audio File Loading, Parallel Hugging Face Classifier & Realistic Simulation
+
+> [!NOTE] User Instructions & Guidance:
+> - Add audio file loading supporting as many formats as possible.
+> - Implement parallel audio classifier stream supporting open-weights Hugging Face models (no commercial classifiers).
+> - Implement a realistic simulation approach (multi-formant speech, silence dips, loudness jumps, chordal musical beds).
+> - Identify sources of actual broadcast recordings with commercials for testing.
+> - Apply skills `/ml-kit-genai-prompt-api`, `/adaptive`, and `/testing-setup`.
+
+### Problem & Diagnosis
+- The workbench previously only supported synthetic 220 Hz vs 880 Hz pure tones and live microphone input.
+- Audio file loading and parallel on-device classification were missing.
+- In JVM unit testing, `android.util.Log` threw runtime exceptions, and an initial AGP manifest collision occurred between `tensorflow-lite-support` and `tensorflow-lite-task-audio`.
+
+### Root Cause & Technical Analysis
+- `MediaExtractor` and `MediaCodec` allow native decoding of WAV, MP3, AAC, M4A, FLAC, OGG, and OPUS formats on Android into PCM buffers.
+- `org.tensorflow:tensorflow-lite-task-audio:0.4.4` encapsulates audio classification inference for open-weights models (like YAMNet or AST). Declaring both `tflite-support` and `tflite-task-audio` caused a duplicate namespace collision (`org.tensorflow.lite.support`) under AGP 9.0.
+- Running unit tests on the JVM required `testOptions.unitTests.isReturnDefaultValues = true` and safe logging fallbacks for `android.util.Log`.
+
+### Solution & Standard Procedure
+1. Created feature branch `feature/audio-file-loading-and-classifier` (Rule 9).
+2. Implemented `AudioFileDecoder.kt` using `MediaExtractor` and `MediaCodec` with automatic channel downmixing to mono and resampling to 16 kHz.
+3. Implemented `AudioClassifierEngine.kt` executing open-weights Hugging Face TFLite models in parallel with the Mel-spectrogram engine, with an acoustic feature fallback classifier (Speech, Music, Commercial / Jingle, Silence).
+4. Upgraded `runSimulatedLoop()` in `AudioWorkbenchEngine.kt` to synthesize multi-formant speech cadence ($F_1=500\text{ Hz}, F_2=1500\text{ Hz}, F_3=2500\text{ Hz}$), a 200 ms silence dip, and compressed commercial beds (+8 dB loudness, 440/554/659 Hz chords with rhythm).
+5. Updated `MainScreen.kt` with a 3-way source selector (SYNTH, MIC, FILE), storage access framework file picker launcher, file playback card, and parallel audio classifier card with animated confidence bars.
+6. Implemented unit tests in `AudioFileDecoderTest.kt` and `AudioClassifierEngineTest.kt` (**15 passing tests, BUILD SUCCESSFUL in 22s**).
+7. Successfully assembled debug APK (`assembleDebug`) and verified on emulator `Medium_Phone_API_36.1` with live visual verification screenshots.
+8. Documented curated broadcast test material sources from Internet Archive in `ROADMAP.md`.
+
+### Token & LLM Resource Log
+- **Session ID**: `73aa8283-cf2b-4599-90f0-6ecec254e26f`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\73aa8283-cf2b-4599-90f0-6ecec254e26f\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Android SDK 36 Build-Tools 36.0.0
+  - ADB Daemon (`tcp:5037`)
+  - JDK 21 OpenJDK (`C:\Program Files\Android\Android Studio\jbr`)
+  - Gradle 9.1.0 Daemon
+  - Android Emulator (`Medium_Phone_API_36.1`)
+  - Python 3.12.10
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*

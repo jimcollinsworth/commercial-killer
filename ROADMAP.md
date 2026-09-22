@@ -24,20 +24,41 @@ Use **Alternative A** as a fast first-stage filter. When matrix distance $\Delta
 
 ---
 
+## Broadcast Test Material Sources
+
+For benchmarking commercial detection on real broadcast media, public domain and fair-use archival sources provide complete broadcasts with intact commercial pods:
+
+1. **Internet Archive TV News Archive** (`https://archive.org/details/tv`):
+   - Continuous 24/7 recordings of US TV broadcasts (CNN, MSNBC, Fox News, local network affiliates) with complete commercial breaks.
+   - Formats available for direct download: MP4, MP3.
+2. **Internet Archive Classic TV Commercials Vault** (`https://archive.org/details/classic_tv_commercials` and `https://archive.org/details/vhs-vault`):
+   - Thousands of complete off-air TV recordings with intact commercial pods from the 1980s, 1990s, 2000s, and 2010s.
+   - Formats: MP4, MP3, OGG.
+3. **Internet Archive Old-Time Radio (OTR) Broadcasts** (`https://archive.org/details/oldtimeradio`):
+   - Full original radio programs with original sponsor commercials.
+   - Formats: MP3, OGG, WAV.
+4. **TRECVID / TV Ad Detection Research Benchmarks**:
+   - Open datasets containing annotated commercial boundaries for broadcast television.
+
+---
+
 ## Long-Term Engine Roadmap
 
 1. **Native Framework Integration**:
-   - LiteRT-ML (TFLite) & MediaPipe tasks
+   - LiteRT-ML (TFLite) & MediaPipe tasks (Audio & Video)
+   - Open-weights Hugging Face models (YAMNet, Audio Spectrogram Transformer / AST, Wav2Vec2)
    - AICore / Gemini Nano Prompt API
-   - HuggingFace local GGUF / ONNX models via NNAPI
+   - Local GGUF / ONNX models via NNAPI
 2. **Multi-Input Stream Workbench**:
    - Camera & Microphone live capture
-   - Local audio/video file playback & frame-by-frame analysis
+   - Local audio file decoding (`MediaExtractor` / `MediaCodec` for WAV, MP3, AAC, M4A, FLAC, OGG, OPUS)
+   - Local video file playback & frame-by-frame analysis
    - Streaming service input integration
 3. **Real-Time Instrumentation & Profiling**:
    - Live Mel-spectrogram heatmap display in Jetpack Compose
+   - Real-time parallel classifier confidence visualizers
    - Real-time execution latency charts & log console
    - System trace analysis using `android-profiler`
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*

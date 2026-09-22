@@ -25,10 +25,16 @@ An on-device experimentation workbench and real-time processing engine for Andro
 - `app/src/main/java/com/example/commercialkiller/`
   - `MainActivity.kt`: Entry activity with edge-to-edge UI scaffold (`edge-to-edge`).
   - `Navigation.kt`: Navigation graph and scene transitions.
+  - `data/audio/AudioWorkbenchEngine.kt`: Core engine managing audio pipelines (SYNTH, MIC, FILE) and event triggers.
+  - `data/audio/AudioFileDecoder.kt`: Multi-format audio file decoder (WAV, MP3, AAC, M4A, FLAC, OGG, OPUS) and resampler.
+  - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite.
+  - `data/audio/MelSpectrogramCalculator.kt`: 40-band Mel-spectrogram calculation using Cooley-Tukey FFT.
+  - `data/audio/SpectrogramComparator.kt`: Frame-to-frame matrix distance comparator with configurable thresholding.
   - `ui/camera/CameraScreen.kt`: CameraX surface preview and frame capture pipeline (`camerax`).
   - `data/ai/AiAnalysisViewModel.kt`: On-device AI inference and frame change significance evaluator (`ml-kit-genai-prompt-api`).
+  - `ui/main/MainScreen.kt`: Jetpack Compose adaptive workbench dashboard (`adaptive`).
   - `theme/`: Material Design 3 adaptive theme setup (`adaptive`, `styles`).
-- `app/src/androidTest/`: UI test harnesses (`testing-setup`).
+- `app/src/test/`: Automated unit tests for signal processing, decoding, and classification (`testing-setup`).
 - `gradle/libs.versions.toml`: Version catalog.
 
 ## Development & Build Setup
@@ -43,8 +49,9 @@ An on-device experimentation workbench and real-time processing engine for Andro
 ```cmd
 set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
 set PATH=%JAVA_HOME%\bin;%PATH%
+gradlew.bat testDebugUnitTest
 gradlew.bat assembleDebug
 ```
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*

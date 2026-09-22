@@ -16,8 +16,10 @@
 
 ## Future Increments
 
-- [ ] File selector for local audio/video file benchmarking
-- [ ] MediaPipe & LiteRT-ML model execution pipeline integration
+- [x] File selector for local audio/video file benchmarking (multi-format audio loader: WAV, MP3, AAC, M4A, FLAC, OGG, OPUS)
+- [x] MediaPipe & LiteRT-ML / TFLite parallel audio classifier stream (Hugging Face open-weights models)
+- [x] Realistic acoustic broadcast simulation (multi-formant speech, silence dips, loudness compression)
+- [ ] MediaPipe & LiteRT-ML video model execution pipeline integration
 - [ ] Audio muting & automated component triggers upon commercial detection
 
 ---

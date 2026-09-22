@@ -15,6 +15,9 @@ nav3Core = "1.0.1"
 lifecycleViewmodelNav3 = "2.10.0"
 camerax = "1.4.1"
 adaptive = "1.0.1"
+tflite = "2.16.1"
+tfliteTaskAudio = "0.4.4"
+tfliteSupport = "0.4.4"
 
 [libraries]
 camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
@@ -44,6 +47,9 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "nav3Core" }
 androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "nav3Core" }
 androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelNav3" }
+tflite = { module = "org.tensorflow:tensorflow-lite", version.ref = "tflite" }
+tflite-support = { module = "org.tensorflow:tensorflow-lite-support", version.ref = "tfliteSupport" }
+tflite-task-audio = { module = "org.tensorflow:tensorflow-lite-task-audio", version.ref = "tfliteTaskAudio" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

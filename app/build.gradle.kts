@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.commercialkiller"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
@@ -36,6 +36,10 @@ android {
       resources {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -90,4 +94,7 @@ dependencies {
 
   // Adaptive UI
   implementation(libs.androidx.adaptive)
+
+  // TensorFlow Lite & Audio Classification (LiteRT / Hugging Face models)
+  implementation(libs.tflite.task.audio)
 }

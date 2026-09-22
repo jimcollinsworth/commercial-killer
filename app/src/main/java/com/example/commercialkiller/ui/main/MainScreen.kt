@@ -1,7 +1,13 @@
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 package com.example.commercialkiller.ui.main
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,33 +26,36 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
+import com.example.commercialkiller.data.audio.AudioSourceMode
 import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
+import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.SpectrogramWaterfall
 import com.example.commercialkiller.ui.components.WaveformOscilloscope
+import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
@@ -54,10 +64,23 @@ fun MainScreen(
     engine: AudioWorkbenchEngine = remember { AudioWorkbenchEngine() }
 ) {
     val state by engine.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // File picker launcher supporting broad audio MIME types
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let {
+            coroutineScope.launch {
+                engine.loadAudioFile(context, it)
+            }
+        }
+    }
 
     // Auto-start simulated workbench on launch for immediate real-time visualization
     DisposableEffect(Unit) {
-        engine.start(useLiveMic = false)
+        engine.start(AudioSourceMode.SYNTH)
         onDispose {
             engine.stop()
         }
@@ -71,20 +94,58 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Header Bar
             WorkbenchHeader(
                 isRunning = state.isRunning,
-                isLiveMic = state.isLiveMic,
+                sourceMode = state.sourceMode,
                 onToggleRunning = {
-                    if (state.isRunning) engine.stop() else engine.start(state.isLiveMic)
+                    if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
                 },
-                onToggleSource = { useMic ->
-                    engine.stop()
-                    engine.start(useMic)
+                onSelectSource = { mode ->
+                    if (mode == AudioSourceMode.FILE && state.loadedFileName == null) {
+                        filePickerLauncher.launch(
+                            arrayOf(
+                                "audio/*",
+                                "application/ogg",
+                                "video/mp4"
+                            )
+                        )
+                    } else {
+                        engine.start(mode)
+                    }
+                },
+                onOpenFilePicker = {
+                    filePickerLauncher.launch(
+                        arrayOf(
+                            "audio/*",
+                            "application/ogg",
+                            "video/mp4"
+                        )
+                    )
                 }
             )
+
+            // File Playback Controls (visible when in FILE mode)
+            if (state.sourceMode == AudioSourceMode.FILE && state.loadedFileName != null) {
+                FilePlaybackCard(
+                    fileName = state.loadedFileName ?: "",
+                    positionMs = state.filePositionMs,
+                    durationMs = state.fileDurationMs,
+                    progress = state.fileProgress,
+                    onSeek = { engine.seekFile(it) },
+                    onChangeFile = {
+                        filePickerLauncher.launch(
+                            arrayOf(
+                                "audio/*",
+                                "application/ogg",
+                                "video/mp4"
+                            )
+                        )
+                    }
+                )
+            }
 
             // Alert Banner (when shift triggered)
             if (state.isEventTriggered) {
@@ -92,7 +153,7 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color(0xFFDC2626), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
                         text = "⚡ COMMERCIAL SHIFT DETECTED! (Δ = %.4f > %.2f)".format(
@@ -100,7 +161,7 @@ fun MainScreen(
                         ),
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -110,19 +171,19 @@ fun MainScreen(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(10.dp)) {
                     Text(
                         text = "AUDIO WAVEFORM (PCM 16-BIT / 16 KHZ)",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF94A3B8),
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     WaveformOscilloscope(
                         waveform = state.waveform,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(60.dp)
+                            .height(50.dp)
                     )
                 }
             }
@@ -132,7 +193,7 @@ fun MainScreen(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -150,13 +211,13 @@ fun MainScreen(
                             color = Color(0xFF38BDF8)
                         )
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     SpectrogramWaterfall(
                         history = state.spectrogramHistory,
                         numMelBands = 40,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(100.dp)
+                            .height(80.dp)
                     )
                 }
             }
@@ -166,13 +227,42 @@ fun MainScreen(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(10.dp)) {
                     DistanceMeter(
                         distance = state.currentDistance,
                         threshold = state.threshold,
                         isTriggered = state.isEventTriggered,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+            }
+
+            // Parallel Audio Classifier Card (Hugging Face / TFLite Stream)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "PARALLEL AUDIO CLASSIFIER",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF94A3B8),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = state.activeClassifierModel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF34D399),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    ParallelClassifierContent(scores = state.classifierScores)
                 }
             }
 
@@ -206,7 +296,7 @@ fun MainScreen(
                         Text(
                             text = "Awaiting acoustic shift events...",
                             color = Color.Gray,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -219,13 +309,13 @@ fun MainScreen(
                             Text(
                                 text = "[${event.timestamp}] ${event.description}",
                                 color = Color(0xFF34D399),
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
                             )
                             Text(
                                 text = "Δ=%.3f".format(event.distance),
                                 color = Color(0xFFFBBF24),
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -239,52 +329,170 @@ fun MainScreen(
 @Composable
 private fun WorkbenchHeader(
     isRunning: Boolean,
-    isLiveMic: Boolean,
+    sourceMode: AudioSourceMode,
     onToggleRunning: () -> Unit,
-    onToggleSource: (Boolean) -> Unit
+    onSelectSource: (AudioSourceMode) -> Unit,
+    onOpenFilePicker: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column {
-            Text(
-                text = "AUDIO / VIDEO WORKBENCH",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-            Text(
-                text = "100% LOCAL ON-DEVICE • ZERO CLOUD",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF10B981)
-            )
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = if (isLiveMic) "MIC" else "SYNTH",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.LightGray
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Switch(
-                checked = isLiveMic,
-                onCheckedChange = onToggleSource,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color(0xFF38BDF8),
-                    checkedTrackColor = Color(0xFF0284C7)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "AUDIO / VIDEO WORKBENCH",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
                 )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "100% LOCAL ON-DEVICE • ZERO CLOUD",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF10B981)
+                )
+            }
+
             Button(
                 onClick = onToggleRunning,
+                modifier = Modifier.height(44.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isRunning) Color(0xFFDC2626) else Color(0xFF059669)
                 )
             ) {
-                Text(if (isRunning) "STOP" else "START", fontSize = 12.sp)
+                Text(if (isRunning) "STOP" else "START", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Source Mode Selector (SYNTH, MIC, FILE)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            AudioSourceMode.values().forEach { mode ->
+                val isSelected = sourceMode == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSelected) Color(0xFF0284C7) else Color(0xFF1E293B))
+                        .clickable { onSelectSource(mode) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mode.name,
+                        color = if (isSelected) Color.White else Color.LightGray,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilePlaybackCard(
+    fileName: String,
+    positionMs: Long,
+    durationMs: Long,
+    progress: Float,
+    onSeek: (Float) -> Unit,
+    onChangeFile: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "FILE: $fileName",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "%02d:%02d / %02d:%02d".format(
+                        (positionMs / 1000) / 60, (positionMs / 1000) % 60,
+                        (durationMs / 1000) / 60, (durationMs / 1000) % 60
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.LightGray,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Slider(
+                value = progress,
+                onValueChange = onSeek,
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF38BDF8),
+                    activeTrackColor = Color(0xFF0284C7)
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun ParallelClassifierContent(scores: List<ClassifierScore>) {
+    if (scores.isEmpty()) {
+        Text(
+            text = "Classifying stream...",
+            color = Color.Gray,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            scores.forEach { item ->
+                val animatedProgress by animateFloatAsState(
+                    targetValue = item.score.coerceIn(0f, 1f),
+                    label = "classifierProgress"
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = item.label,
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.width(140.dp)
+                    )
+                    LinearProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = when {
+                            item.label.contains("Commercial", ignoreCase = true) -> Color(0xFFDC2626)
+                            item.label.contains("Silence", ignoreCase = true) -> Color(0xFFFBBF24)
+                            else -> Color(0xFF38BDF8)
+                        },
+                        trackColor = Color(0xFF0F172A),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "%.0f%%".format(item.score * 100f),
+                        color = Color(0xFF94A3B8),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.width(36.dp)
+                    )
+                }
             }
         }
     }
@@ -301,7 +509,7 @@ private fun WorkbenchControls(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
         shape = RoundedCornerShape(12.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             // Threshold Slider
             Row(
                 modifier = Modifier.fillMaxWidth(),
