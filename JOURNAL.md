@@ -355,7 +355,46 @@
   - GitHub CLI (`gh release create v1.5`)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
+## 2026-09-22: Real-time File Audio Playback, File Reselection & UI Polish
+
+> [!NOTE] User Instructions & Guidance:
+> - Once I select a file, it doesn't seem like I can reselect a different file.
+> - When using a file to analyze, we should play the sound so I can hear it (at least in real-time mode).
+> - Change the title for workbench to commercial killer and remove the 100% local no cloud tagline.
+> - Remove the audio waveform display. The Mel coefficient is enough of an indicator of sound and activity.
+
+### Problem & Diagnosis
+- In FILE mode, clicking the FILE button or playback card did not offer a way to reselect a new audio file once an initial file was loaded.
+- Audio file decoding was only calculating Mel-spectrogram energy in memory without outputting the PCM audio chunks to device speakers.
+- The UI had redundant subtitle copy and a waveform oscilloscope card that consumed vertical space without adding semantic value beyond the 40-band Mel-spectrogram.
+
+### Solution & Technical Implementation
+1. **Real-time Audio Speaker Playback (`AudioWorkbenchEngine.kt`)**:
+   - Initialized `AudioTrack` with `AudioAttributes.USAGE_MEDIA` and `AudioFormat.ENCODING_PCM_FLOAT` at 16 kHz.
+   - Streamed decoded PCM float chunks directly to `AudioTrack.write()` in `runFileLoop()` with proper lifecycle release in `finally` blocks.
+2. **File Reselection Support (`MainScreen.kt`)**:
+   - Added prominent `RESELECT FILE` button in `FilePlaybackCard`.
+   - Updated `onSelectSource` handler so tapping `FILE` when already in FILE mode reopens the file picker.
+3. **UI Polish & Header Update (`MainScreen.kt`)**:
+   - Changed top title to **COMMERCIAL KILLER**.
+   - Removed the "100% LOCAL ON-DEVICE • ZERO CLOUD" tagline.
+   - Removed the `WaveformOscilloscope` Card to maximize vertical screen density for spectrogram and classifier metrics.
+4. **Build & Test Verification**:
+   - Ran `gradlew.bat testDebugUnitTest` — 24/24 unit tests passed.
+   - Ran `gradlew.bat assembleDebug` — BUILD SUCCESSFUL.
+   - Refreshed `app-debug.apk` in project root.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.7` (Gemini 3.7 Flash Medium)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android `AudioTrack` API (PCM Float real-time playback)
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.7.*
 
 
 

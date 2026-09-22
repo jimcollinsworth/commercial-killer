@@ -59,7 +59,6 @@ import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
 import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.SpectrogramWaterfall
-import com.example.commercialkiller.ui.components.WaveformOscilloscope
 import kotlinx.coroutines.launch
 
 @Composable
@@ -110,14 +109,18 @@ fun MainScreen(
                     if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
                 },
                 onSelectSource = { mode ->
-                    if (mode == AudioSourceMode.FILE && state.loadedFileName == null) {
-                        filePickerLauncher.launch(
-                            arrayOf(
-                                "audio/*",
-                                "application/ogg",
-                                "video/mp4"
+                    if (mode == AudioSourceMode.FILE) {
+                        if (state.sourceMode == AudioSourceMode.FILE || state.loadedFileName == null) {
+                            filePickerLauncher.launch(
+                                arrayOf(
+                                    "audio/*",
+                                    "application/ogg",
+                                    "video/mp4"
+                                )
                             )
-                        )
+                        } else {
+                            engine.start(mode)
+                        }
                     } else {
                         engine.start(mode)
                     }
@@ -168,28 +171,6 @@ fun MainScreen(
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
-                    )
-                }
-            }
-
-            // Real-time Audio Waveform (Oscilloscope)
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text(
-                        text = "AUDIO WAVEFORM (PCM 16-BIT / 16 KHZ)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF94A3B8),
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    WaveformOscilloscope(
-                        waveform = state.waveform,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
                     )
                 }
             }
@@ -349,15 +330,10 @@ private fun WorkbenchHeader(
         ) {
             Column {
                 Text(
-                    text = "AUDIO / VIDEO WORKBENCH",
+                    text = "COMMERCIAL KILLER",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
-                )
-                Text(
-                    text = "100% LOCAL ON-DEVICE • ZERO CLOUD",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF10B981)
                 )
             }
 
@@ -450,21 +426,31 @@ private fun FilePlaybackCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "FILE: $fileName",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF38BDF8),
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "%02d:%02d / %02d:%02d".format(
-                        (positionMs / 1000) / 60, (positionMs / 1000) % 60,
-                        (durationMs / 1000) / 60, (durationMs / 1000) % 60
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.LightGray,
-                    fontFamily = FontFamily.Monospace
-                )
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        text = "FILE: $fileName",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "%02d:%02d / %02d:%02d".format(
+                            (positionMs / 1000) / 60, (positionMs / 1000) % 60,
+                            (durationMs / 1000) / 60, (durationMs / 1000) % 60
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.LightGray,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Button(
+                    onClick = onChangeFile,
+                    modifier = Modifier.height(34.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    Text("RESELECT FILE", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
             }
             Slider(
                 value = progress,

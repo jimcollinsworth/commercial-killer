@@ -3,8 +3,10 @@ package com.example.commercialkiller.data.audio
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.net.Uri
 import kotlinx.coroutines.CoroutineScope
@@ -264,69 +266,112 @@ class AudioWorkbenchEngine(
     private suspend fun runFileLoop() {
         val audio = loadedAudio ?: return
         val chunkSize = 512
+        val sampleRate = 16000
         val history = ArrayDeque<FloatArray>(30)
         val logs = ArrayDeque<WorkbenchEvent>(50)
         val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
-        while (scope.isActive) {
-            val interval = _state.value.intervalMs
-            val totalSamples = audio.samples.size
-
-            if (fileSampleOffset >= totalSamples) {
-                // Loop back to start of file
-                fileSampleOffset = 0
-            }
-
-            val remaining = totalSamples - fileSampleOffset
-            val currentChunkSize = chunkSize.coerceAtMost(remaining)
-            val samples = FloatArray(chunkSize)
-            System.arraycopy(audio.samples, fileSampleOffset, samples, 0, currentChunkSize)
-            fileSampleOffset += currentChunkSize
-
-            val progress = fileSampleOffset.toFloat() / totalSamples.coerceAtLeast(1)
-            val currentPosMs = (audio.durationMs * progress).toLong()
-
-            // Parallel Execution: Mel-Spectrogram + Audio Classifier
-            val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(samples) }
-            val classificationDeferred = scope.async { classifier.classify(samples) }
-
-            val melEnergies = melEnergiesDeferred.await()
-            val classificationScores = classificationDeferred.await()
-
-            if (history.size >= 30) history.removeFirst()
-            history.addLast(melEnergies)
-
-            val compResult = comparator.compare(melEnergies)
-            if (compResult.isSignificant) {
-                val event = WorkbenchEvent(
-                    timestamp = dateFormat.format(Date()),
-                    distance = compResult.distance,
-                    threshold = compResult.threshold,
-                    description = "File Transition Detected (t=${currentPosMs / 1000}s)"
-                )
-                if (logs.size >= 50) logs.removeFirst()
-                logs.addLast(event)
-            }
-
-            val waveformView = FloatArray(256)
-            for (i in 0 until 256) {
-                waveformView[i] = samples[i * (chunkSize / 256)]
-            }
-
-            _state.value = _state.value.copy(
-                waveform = waveformView,
-                spectrogramHistory = history.toList(),
-                currentDistance = compResult.distance,
-                isEventTriggered = compResult.isSignificant,
-                eventLogs = logs.toList().reversed(),
-                classifierScores = classificationScores,
-                filePositionMs = currentPosMs,
-                fileProgress = progress
+        var audioTrack: AudioTrack? = null
+        try {
+            val minBufSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_FLOAT
             )
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBufSize.coerceAtLeast(4096))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            audioTrack.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
-            delay(interval)
+        try {
+            while (scope.isActive) {
+                val interval = _state.value.intervalMs
+                val totalSamples = audio.samples.size
+
+                if (fileSampleOffset >= totalSamples) {
+                    // Loop back to start of file
+                    fileSampleOffset = 0
+                }
+
+                val remaining = totalSamples - fileSampleOffset
+                val currentChunkSize = chunkSize.coerceAtMost(remaining)
+                val samples = FloatArray(chunkSize)
+                System.arraycopy(audio.samples, fileSampleOffset, samples, 0, currentChunkSize)
+                fileSampleOffset += currentChunkSize
+
+                // Play audio chunk to speaker in real-time
+                if (currentChunkSize > 0 && audioTrack != null) {
+                    audioTrack.write(samples, 0, currentChunkSize, AudioTrack.WRITE_NON_BLOCKING)
+                }
+
+                val progress = fileSampleOffset.toFloat() / totalSamples.coerceAtLeast(1)
+                val currentPosMs = (audio.durationMs * progress).toLong()
+
+                // Parallel Execution: Mel-Spectrogram + Audio Classifier
+                val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(samples) }
+                val classificationDeferred = scope.async { classifier.classify(samples) }
+
+                val melEnergies = melEnergiesDeferred.await()
+                val classificationScores = classificationDeferred.await()
+
+                if (history.size >= 30) history.removeFirst()
+                history.addLast(melEnergies)
+
+                val compResult = comparator.compare(melEnergies)
+                if (compResult.isSignificant) {
+                    val event = WorkbenchEvent(
+                        timestamp = dateFormat.format(Date()),
+                        distance = compResult.distance,
+                        threshold = compResult.threshold,
+                        description = "File Transition Detected (t=${currentPosMs / 1000}s)"
+                    )
+                    if (logs.size >= 50) logs.removeFirst()
+                    logs.addLast(event)
+                }
+
+                val waveformView = FloatArray(256)
+                for (i in 0 until 256) {
+                    waveformView[i] = samples[i * (chunkSize / 256)]
+                }
+
+                _state.value = _state.value.copy(
+                    waveform = waveformView,
+                    spectrogramHistory = history.toList(),
+                    currentDistance = compResult.distance,
+                    isEventTriggered = compResult.isSignificant,
+                    eventLogs = logs.toList().reversed(),
+                    classifierScores = classificationScores,
+                    filePositionMs = currentPosMs,
+                    fileProgress = progress
+                )
+
+                delay(interval)
+            }
+        } finally {
+            try {
+                audioTrack?.stop()
+                audioTrack?.release()
+            } catch (ignored: Exception) {}
         }
     }
+
 
     @SuppressLint("MissingPermission")
     private suspend fun runLiveMicLoop() {
