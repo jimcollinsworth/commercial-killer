@@ -21,8 +21,14 @@
 - [x] Download & verification of real broadcast test clips with commercials (`test_assets/`)
 - [x] MediaPipe & LiteRT-ML / TFLite parallel audio classifier stream (Hugging Face open-weights models)
 - [x] Realistic acoustic broadcast simulation (multi-formant speech, silence dips, loudness compression)
+- [x] IR Infrared command sender (`ConsumerIrManager` for simple Mute/Unmute IR transmission)
+- [x] IR & TV Control test screen (`IrSettingsScreen.kt` with Mute/Unmute buttons, carrier frequency config, and action console)
+- [x] Hisense Android TV IP control & webhook runner (HTTP POST / REST integration)
+- [x] Comprehensive System Help & Details screen (`HelpScreen.kt` detailing signal processing, 40-band Mel calculation, IR signals, webhooks, and input modes)
+- [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)
+- [ ] ADK for Kotlin 1.0 integration (deferred until later release)
 - [ ] MediaPipe & LiteRT-ML video model execution pipeline integration
-- [ ] Audio muting & automated component triggers upon commercial detection
+- [ ] Game-Style HUD & POV UI redesign (deferred for future iteration)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*

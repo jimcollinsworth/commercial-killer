@@ -229,4 +229,83 @@
   - Remote: `https://github.com/jimcollinsworth/commercial-killer.git`
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*
+
+## 2026-09-22: Technical Proposals for ADK Kotlin 1.0, IR Control, & Game HUD Redesign
+
+> [!NOTE] User Instructions & Guidance:
+> - Consider support of new Agent Development Kit (ADK) for Kotlin 1.0 (https://developers.googleblog.com/announcing-adk-for-kotlin-10-building-production-ready-ai-agents-in-kotlin-android-and-beyond/) to allow commercial-killer to receive commands and initiate actions (Future enhancement).
+> - Need ability to send IR infrared commands from the LLM (simple IR send first for mute/unmute), receive them as input/training/corrections, and call web URLs/webhooks to communicate with Hisense Android TV.
+> - UI needs to be more game-like, not dashboard-like (HUD, POV, data overlaying graphics, video backgrounds). Consider later, sketch out options first with images.
+
+### Problem & Diagnosis
+- Commercial Killer currently operates primarily as an analytical visualizer and detection engine. To act as a complete commercial killer, it requires direct physical hardware control (IR emitter for TV mute/unmute, Wi-Fi webhooks for smart TV REST APIs), agentic orchestration (ADK for Kotlin 1.0), and an immersive game HUD layout over camera/video feeds.
+
+### Solution & Technical Proposals
+1. **ADK for Kotlin 1.0 Integration**:
+   - Researched Google's ADK for Kotlin 1.0 (September 2026 release) with Kotlin Multiplatform (KMP) core and `InMemoryRunner`.
+   - Designed tool contracts for local on-device action dispatching (`IrMuteTool`, `TvWebhookTool`, `IrLearnTool`).
+2. **IR Emitter & Smart TV Control**:
+   - Detailed native Android `ConsumerIrManager` 38 kHz carrier frequency pulse sequence generation for NEC/Sony mute key codes.
+   - Formatted HTTP POST REST webhooks for Hisense Android TV IP control over local Wi-Fi.
+3. **Game HUD & POV Interface Visual Concepts**:
+   - Generated 2 visual mockup concept images (`hud_game_ui_concept_1.jpg` and `hud_game_ui_concept_2.jpg`) demonstrating tactical HUD canvas over living room camera/video feed, spectrograph overlays, targeting reticles, and command wheels.
+4. **Governance Updates**:
+   - Updated `ROADMAP.md` with technical proposals for ADK Kotlin 1.0, IR/Webhooks action engine, and Game HUD overlay.
+   - Updated `PLANNING.md` sprint backlog with upcoming milestones.
+   - Created `implementation_plan.md` artifact featuring an interactive markdown carousel showcasing both UI concept mockups.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.6` (Gemini 3.6 Flash Medium)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Image Generator tool (`hud_game_ui_concept_1`, `hud_game_ui_concept_2`)
+  - Web Search tool (`ADK for Kotlin 1.0`)
+
+---
+
+## 2026-09-22: IR Support & Testing Screen + System Help & Details Screen
+
+> [!NOTE] User Instructions & Guidance:
+> - Add the IR support, IR page for testing (Mute/Unmute buttons, TV selection).
+> - Add page for help, describe details of what the app is doing.
+> - Do NOT add ADK yet to build.
+> - Do NOT do UI changes (HUD redesign deferred until later).
+
+### Problem & Diagnosis
+- The application needed practical hardware execution for muting commercial breaks (via IR blasters or TV IP webhooks), a dedicated testing interface, and user-accessible documentation describing the signal processing math and system capabilities.
+
+### Solution & Technical Implementation
+1. **IR Transmitter & Webhook Controller (`IrEmitterController.kt`)**:
+   - `hasIrEmitter()`: Checks `ConsumerIrManager` hardware presence.
+   - `transmitMute()` & `transmitUnmute()`: Generates 38 kHz NEC carrier frequency pulse arrays (9ms leader mark, 4.5ms space, 16-bit address/command, 562us stop mark).
+   - `triggerTvWebhook()`: Dispatches HTTP POST REST payloads over local Wi-Fi to Hisense Android TV IP control endpoints.
+2. **IR & TV Control Test Screen (`IrSettingsScreen.kt`)**:
+   - Displays hardware IR blaster status.
+   - `TRANSMIT MUTE` & `TRANSMIT UNMUTE` test buttons.
+   - Target TV brand selector and configurable webhook endpoint URL input.
+   - Real-time action log console showing transmission status and HTTP response codes.
+3. **System Help & Details Screen (`HelpScreen.kt`)**:
+   - Comprehensive technical breakdown explaining 40-band Mel-spectrogram calculation (FFT, 100 ms interval), shift distance ($\Delta$), Hugging Face audio classifier stream, IR blaster hardware, Hisense TV webhooks, and data modes (SYNTH, MIC, FILE).
+4. **Navigation Integration**:
+   - Registered `IrSettings` and `Help` NavKeys in `NavigationKeys.kt` and `Navigation.kt`.
+   - Added `HELP` and `IR / TV` buttons in `MainScreen.kt` header.
+5. **Unit Tests & Build Verification**:
+   - Created `IrEmitterControllerTest.kt` verifying NEC pulse structure (67 timing values) and hardware fallback behavior.
+   - Executed `gradlew.bat testDebugUnitTest` — 24/24 tasks executed/up-to-date, BUILD SUCCESSFUL.
+   - Executed `gradlew.bat assembleDebug` — 36/36 tasks executed/up-to-date, BUILD SUCCESSFUL.
+   - Copied compiled `app-debug.apk` to project root.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Jetpack Compose NavDisplay / Navigation3
+  - Android `ConsumerIrManager` API
+  - Java `HttpURLConnection` API
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+

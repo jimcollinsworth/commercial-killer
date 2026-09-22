@@ -100,6 +100,7 @@ fun MainScreen(
             WorkbenchHeader(
                 isRunning = state.isRunning,
                 sourceMode = state.sourceMode,
+                onItemClick = onItemClick,
                 onToggleRunning = {
                     if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
                 },
@@ -330,6 +331,7 @@ fun MainScreen(
 private fun WorkbenchHeader(
     isRunning: Boolean,
     sourceMode: AudioSourceMode,
+    onItemClick: (NavKey) -> Unit = {},
     onToggleRunning: () -> Unit,
     onSelectSource: (AudioSourceMode) -> Unit,
     onOpenFilePicker: () -> Unit
@@ -354,14 +356,35 @@ private fun WorkbenchHeader(
                 )
             }
 
-            Button(
-                onClick = onToggleRunning,
-                modifier = Modifier.height(44.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isRunning) Color(0xFFDC2626) else Color(0xFF059669)
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(if (isRunning) "STOP" else "START", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Button(
+                    onClick = { onItemClick(com.example.commercialkiller.Help) },
+                    modifier = Modifier.height(44.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
+                ) {
+                    Text("HELP", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = { onItemClick(com.example.commercialkiller.IrSettings) },
+                    modifier = Modifier.height(44.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    Text("IR / TV", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = onToggleRunning,
+                    modifier = Modifier.height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRunning) Color(0xFFDC2626) else Color(0xFF059669)
+                    )
+                ) {
+                    Text(if (isRunning) "STOP" else "START", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
 

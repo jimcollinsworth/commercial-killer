@@ -30,6 +30,9 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite.
   - `data/audio/MelSpectrogramCalculator.kt`: 40-band Mel-spectrogram calculation using Cooley-Tukey FFT.
   - `data/audio/SpectrogramComparator.kt`: Frame-to-frame matrix distance comparator with configurable thresholding.
+  - `data/action/IrEmitterController.kt`: Hardware IR transmitter controller (`ConsumerIrManager` 38 kHz NEC pulses) and Hisense TV HTTP Webhook runner.
+  - `ui/ir/IrSettingsScreen.kt`: Dedicated IR hardware test screen and smart TV webhook testing console.
+  - `ui/help/HelpScreen.kt`: Comprehensive System Help & Technical Details screen explaining signal processing, Mel-spectrogram math, IR signals, webhooks, and workbench modes.
   - `ui/camera/CameraScreen.kt`: CameraX surface preview and frame capture pipeline (`camerax`).
   - `data/ai/AiAnalysisViewModel.kt`: On-device AI inference and frame change significance evaluator (`ml-kit-genai-prompt-api`).
   - `ui/main/MainScreen.kt`: Jetpack Compose adaptive workbench dashboard (`adaptive`).

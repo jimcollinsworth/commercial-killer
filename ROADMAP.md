@@ -61,4 +61,48 @@ For benchmarking commercial detection on real broadcast media, public domain and
    - System trace analysis using `android-profiler`
 
 ---
+
+## Technical Proposal: ADK for Kotlin 1.0 Agent Integration
+
+Integration of Google's **Agent Development Kit (ADK) for Kotlin 1.0** to provide autonomous action dispatching and bidirectional agentic communication:
+
+1. **Architecture & Scope**:
+   - Utilize KMP-ready ADK Kotlin core with `InMemoryRunner` for on-device agent state machine management.
+   - Define structured action tools in Kotlin: `MuteAudioAction`, `UnmuteAudioAction`, `SendIrCommandAction`, and `TriggerTvWebhookAction`.
+2. **LLM Orchestration**:
+   - Couple local Gemini Nano / LiteRT-LM model with ADK tool calling capabilities.
+   - When a commercial transition event is flagged by the spectrogram comparator, the ADK agent receives the event payload, determines intent, and dispatches hardware/network actions.
+
+---
+
+## Technical Proposal: IR Emitter & TV Webhook Action Engine
+
+Direct hardware control capabilities to act upon commercial detection:
+
+1. **Simple IR Send (Mute / Unmute)**:
+   - Interface with Android `ConsumerIrManager` (`getSystemService(CONSUMER_IR_SERVICE)`).
+   - Transmit standard consumer IR carrier frequency patterns (e.g., 38 kHz NEC / Sony / Philips RC6 protocol pulse bursts) for `MUTE` and `UNMUTE`.
+2. **IR Signal Acquisition & Calibration**:
+   - Receive incoming IR raw frequency samples (via IR receiver hardware or learning dongle) to register custom remote controls.
+   - Store signal timing vectors for user correction and training.
+3. **Hisense Android TV IP Control & Webhooks**:
+   - Dispatch HTTP POST/REST webhooks over local Wi-Fi to Hisense Android TV control endpoints (e.g., MQTT / HTTP remote services).
+   - Configurable webhook URL schema: `http://<tv-ip>:8080/api/v1/remote/mute`.
+
+---
+
+## Technical Proposal: Game-Style HUD & POV Interface Redesign
+
+Transition from standard static dashboard layout to an immersive, game-like Heads-Up Display (HUD):
+
+1. **POV Camera & Video Background**:
+   - Fullscreen live camera feed (targeting TV in living room) or video playback backdrop.
+2. **Data Overlay Graphics**:
+   - Floating audio Mel-spectrogram waterfall / spectrograph widgets overlaid on the video stream.
+   - Tactical targeting reticle locked onto the TV broadcast zone with real-time commercial confidence indicators.
+   - Dynamic HUD status panels for IR emitter state, ADK agent telemetry, and active webhooks.
+3. **Action Wheels & Tactical Controls**:
+   - Circular command wheel overlay for quick IR mute, unmute, and manual override triggers.
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
