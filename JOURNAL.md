@@ -203,4 +203,30 @@
   - Python 3.12.10
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
+## 2026-09-22: GitHub Release v1.3 & Remote Push
+
+> [!NOTE] User Instructions & Guidance:
+> - User explicitly requested creating a GitHub release to download the APK directly on their Pixel phone over cellular 5G.
+
+### Problem & Diagnosis
+- Downloading `app-debug.apk` directly through the Antigravity remote browser viewer failed because the web text editor cannot render compiled Android binaries.
+- The phone was connected via cellular 5G, so local LAN web server links were unreachable.
+
+### Solution & Standard Procedure
+1. Merged `feature/audio-file-loading-and-classifier` into `main` (`commit 1403142`).
+2. Pushed `main` to `https://github.com/jimcollinsworth/commercial-killer.git` per explicit user instructions (Rule 9).
+3. Created GitHub Release `v1.3` with `app-debug.apk` attached using `gh release create v1.3 app\build\outputs\apk\debug\app-debug.apk`.
+4. Release published at: `https://github.com/jimcollinsworth/commercial-killer/releases/tag/v1.3`.
+
+### Token & LLM Resource Log
+- **Session ID**: `73aa8283-cf2b-4599-90f0-6ecec254e26f`
+- **Model Identifier**: `LLM-Gemini3.6` (Gemini 3.6 Flash Medium)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\73aa8283-cf2b-4599-90f0-6ecec254e26f\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - GitHub CLI (`gh release create v1.3`)
+  - Git CLI (`git push origin main`)
+  - Remote: `https://github.com/jimcollinsworth/commercial-killer.git`
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*
