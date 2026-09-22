@@ -340,6 +340,8 @@
    - Ran `gradlew.bat testDebugUnitTest` — 24/24 tasks executed/up-to-date, BUILD SUCCESSFUL.
    - Ran `gradlew.bat assembleDebug` — 36/36 tasks executed/up-to-date, BUILD SUCCESSFUL.
    - Updated `app-debug.apk` in project root.
+   - Pushed commit `c1a3ce5` to `origin/main`.
+   - Published GitHub Release `v1.5` with attached `app-debug.apk`: `https://github.com/jimcollinsworth/commercial-killer/releases/tag/v1.5`.
 
 ### Token & LLM Resource Log
 - **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
@@ -349,8 +351,11 @@
   - Android `ConsumerIrManager` API
   - Compose Canvas Vector Graphics
   - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+  - Git CLI (`git push origin main`)
+  - GitHub CLI (`gh release create v1.5`)
 
 ---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
 
 
