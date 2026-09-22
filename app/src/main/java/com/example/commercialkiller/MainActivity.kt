@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 class MainActivity : ComponentActivity() {
-  private val engine = AudioWorkbenchEngine()
+  private val engine by lazy { AudioWorkbenchEngine(applicationContext) }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)

@@ -30,11 +30,12 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite.
   - `data/audio/MelSpectrogramCalculator.kt`: 40-band Mel-spectrogram calculation using Cooley-Tukey FFT.
   - `data/audio/SpectrogramComparator.kt`: Frame-to-frame matrix distance comparator with configurable thresholding.
+  - `data/action/TvControlManager.kt`: Unified TV control manager handling persistent settings (SharedPreferences) and multi-channel MUTE/UNMUTE dispatch (Webhook / IR).
   - `data/action/IrEmitterController.kt`: Hardware IR transmitter controller (`ConsumerIrManager` 38 kHz NEC pulses) and Hisense TV HTTP Webhook runner.
   - `data/action/IrCodeDatabase.kt`: Predefined TV Code Set presets (Hisense Sets 1-4, Samsung, LG, Sony, Vizio, TCL, Custom Pronto).
   - `data/action/ProntoHexConverter.kt`: Universal Pronto Hex to ConsumerIrManager carrier frequency and microsecond pulse timing decoder.
   - `ui/components/AppIcons.kt`: Lightweight, zero-dependency custom vector icons for Back, Help, Settings, Play, Stop, and StepNext (44×44dp touch targets).
-  - `ui/ir/IrSettingsScreen.kt`: Dedicated IR hardware test screen with Code Set selector, Test & Step pairing wizard, and smart TV webhook testing console.
+  - `ui/ir/IrSettingsScreen.kt`: Dedicated IR hardware & Webhook test screen with Code Set selector, Test & Step pairing wizard, and smart TV automation console.
   - `ui/help/HelpScreen.kt`: Comprehensive System Help & Technical Details screen explaining signal processing, Mel-spectrogram math, IR signals, webhooks, and workbench modes.
   - `ui/camera/CameraScreen.kt`: CameraX surface preview and frame capture pipeline (`camerax`).
   - `data/ai/AiAnalysisViewModel.kt`: On-device AI inference and frame change significance evaluator (`ml-kit-genai-prompt-api`).
