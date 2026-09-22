@@ -1,50 +1,17 @@
-# Built application files
-*.apk
-*.aar
-*.ap_
-*.aab
-
-# Files for the ART/Dalvik VM
-*.dex
-
-# Java class files
-*.class
-
-# Generated files
-bin/
-gen/
-out/
-build/
-**/build/
-.transforms/
-**/.transforms/
-
-# Gradle files
-.gradle/
-
-# Local configuration file (sdk path, etc)
-local.properties
-
-# Android Studio / IntelliJ IDEA
-.idea/
 *.iml
-
-# Signing files
-*.jks
-*.keystore
-
-# External native build folder
-.externalNativeBuild
-.cxx/
-cmake/
-
-# Log files
-*.log
-
-# OS generated files
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
 .DS_Store
-Thumbs.db
-captures/
-
-# Speaker Notes / Scratch
-DEEP_DIVE_SPEAKER_NOTES.md
+/build
+**/build/
+.kotlin/
+/captures
+.externalNativeBuild
+.cxx
+local.properties

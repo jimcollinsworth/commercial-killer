@@ -1,58 +1,50 @@
-# AI-Native Android Architecture Sample
+# Commercial Killer — Audio/Video AI Workbench
 
-![GitHub Repo stars](https://img.shields.io/github/stars/dev-vikas-soni/nano-banana-andorid?style=social)
-![GitHub forks](https://img.shields.io/github/forks/dev-vikas-soni/nano-banana-andorid?style=social)
+An on-device experimentation workbench and real-time processing engine for Android. Commercial Killer ingests live camera/microphone streams or local files, computes real-time signal transformations (such as Mel-spectrograms), and runs on-device AI feature detectors and local LLMs (LiteRT-ML, MediaPipe, AICore / Gemini Nano) to detect content transitions and commercial breaks with **zero cloud dependencies**.
 
-A portfolio-quality Android application demonstrating **AI-Native Architecture** using real, on-device **Gemini Nano via Google AICore**. This project moves beyond simple "AI chatbot" examples to showcase a professional, scalable approach to building **Agentic Workflows** on Android.
+## Core Features & Vision
 
-## Why this project?
+- **100% Local On-Device Execution**: Runs entirely on the phone hardware — no external cloud APIs or network calls.
+- **Flexible Data Inputs**:
+  - Microphones & live camera streams (`camerax`)
+  - Local audio & video files
+  - Combined stream pipelines & future streaming input services
+- **Signal Processing & Feature Detection**:
+  - Configurable Mel-spectrogram calculations (100 ms default interval)
+  - Mel-spectrogram matrix shift & change significance detection
+  - Native integration with LiteRT-ML (TFLite), MediaPipe, and HuggingFace models
+- **Local Multimodal LLM Evaluation**:
+  - Local Gemini Nano / AICore evaluations comparing current vs. previous spectrogram frames.
+- **Real-Time Workbench Dashboard**:
+  - Input stream video preview & live audio visualizer
+  - Graphical Mel-spectrogram waterfall / heatmap
+  - Live model execution logs and confidence metrics
 
-As on-device AI capabilities grow, integrating models directly into applications requires strong architectural foundations. This sample provides Android engineers with a clear, production-ready blueprint for:
-- **Separation of Concerns:** Isolating raw AI SDKs from domain and UI logic.
-- **Runtime AI Engine Swapping:** Dynamically switching between a Simulated Agent and the Real NPU at runtime.
-- **Agent Orchestration:** Managing multi-step AI tasks (e.g., reading context, executing tools, drafting responses).
-- **Observability:** Exposing the internal "thinking" of the AI agent to the user or developer in real-time.
+## Architecture & Directory Layout
 
-## Key Features
+- `app/src/main/java/com/example/commercialkiller/`
+  - `MainActivity.kt`: Entry activity with edge-to-edge UI scaffold (`edge-to-edge`).
+  - `Navigation.kt`: Navigation graph and scene transitions.
+  - `ui/camera/CameraScreen.kt`: CameraX surface preview and frame capture pipeline (`camerax`).
+  - `data/ai/AiAnalysisViewModel.kt`: On-device AI inference and frame change significance evaluator (`ml-kit-genai-prompt-api`).
+  - `theme/`: Material Design 3 adaptive theme setup (`adaptive`, `styles`).
+- `app/src/androidTest/`: UI test harnesses (`testing-setup`).
+- `gradle/libs.versions.toml`: Version catalog.
 
-*   **Real On-Device Gemini Nano:** Powered by `com.google.ai.edge.aicore`, running 100% locally on supported devices (Pixel 8+, Galaxy S24).
-*   **Runtime UI Toggle:** Don't have a supported device? No problem! Toggle between the "Simulated NPU" and the "Real NPU" right from the Chat UI.
-*   **"Summarize & Draft" Flow:** Users can open a chat, hit "Generate Reply", and watch the agent summarize the thread and draft a professional response.
-*   **Agent Observability Sheet:** A real-time UI that traces the AI agent's internal execution state (Tool Start, Tool Complete, Generation) to prove its agentic nature.
-*   **Highly Modular Architecture:** Codebase broken down by feature and layer to ensure scalability.
-*   **Comprehensive Testing:** Fully unit-tested ViewModels and Orchestrators utilizing Kotlin Coroutines Testing (`StandardTestDispatcher`, flow testing).
-
-## Tech Stack
-
-*   **UI:** Jetpack Compose (Material 3)
-*   **Architecture:** MVVM + Clean Architecture principles
-*   **Dependency Injection:** Dagger Hilt
-*   **Local Data:** Room Database
-*   **Asynchronous:** Kotlin Coroutines & StateFlow/SharedFlow
-*   **AI SDK Integration:** Google AICore edge SDK.
-
-## Documentation
-
-Dive deep into how this application was designed and engineered:
-*   [High-Level Design (HLD)](HLD.md): System context, module boundaries, and broad design decisions.
-*   [Low-Level Design (LLD)](LLD.md): Class relationships, data flow diagrams, and state management specifics.
-
-## Getting Started
+## Development & Build Setup
 
 ### Prerequisites
-*   Android Studio Ladybug (or newer)
-*   Android Gradle Plugin (AGP) 9.0+
-*   JDK 17+
-*   A physical device running Android 12+ (API 31) with AICore installed (if you wish to test the *Real* Gemini Nano feature).
+- Android SDK (API 36, Build-Tools 36.0.0)
+- JDK 21 (Android Studio JBR)
+- Android CLI (`android.exe`)
 
-### Building the Project
-1.  Clone the repository.
-2.  Open the project in Android Studio.
-3.  Sync Gradle dependencies.
-4.  Run `./gradlew assembleDebug` or click the **Run** button.
+### Build Commands
 
-> **Note on Gemini Nano Hardware Requirements:** To test the real on-device Gemini Nano, you must run the app on a supported device (like a Pixel 9) and toggle the **Real NPU** switch in the UI. If you are on an emulator or older device, simply leave the switch off, and the architecture will seamlessly use the `FakeGeminiNanoClient` simulation!
+```cmd
+set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
+set PATH=%JAVA_HOME%\bin;%PATH%
+gradlew.bat assembleDebug
+```
 
-## License
-
-This project is open-source and available under the MIT License.
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.*
