@@ -311,6 +311,46 @@
   - GitHub CLI (`gh release create v1.4`)
 
 ---
+
+## 2026-09-22: TV Code Set Selector, Pronto Hex Converter & Non-Wrapping AppIcons
+
+> [!NOTE] User Instructions & Guidance:
+> - Add the code set selector, personal and tester settings.
+> - Replace options and back buttons with nice standard icons because the text wraps.
+
+### Problem & Diagnosis
+- Different television models require different IR protocol addresses and carrier frequencies; a single hardcoded pulse code only works for one hardware variant.
+- In the top header bar, text buttons ("HELP", "IR / TV", "STOP / START") and "BACK" buttons caused text wrapping and inconsistent button heights on standard mobile screens.
+
+### Solution & Technical Implementation
+1. **TV Code Set Presets (`IrCodeDatabase.kt`)**:
+   - Added catalog of discrete TV remote presets: Hisense (Sets 1–4: NEC Address 0x00, 0x04, 0xBF, 0x57), Samsung (Set 1), LG (Set 1), Sony (Bravia SIRC), Vizio, TCL, and Custom Pronto Hex.
+2. **Universal Pronto Hex Decoder (`ProntoHexConverter.kt`)**:
+   - Parses standard Pronto Hex strings into carrier frequency ($f = \frac{10^6}{N \times 0.241246}$) and microsecond pulse pattern `IntArray` for `ConsumerIrManager.transmit()`.
+3. **Tester & Step Pairing Wizard (`IrSettingsScreen.kt`)**:
+   - Added dropdown selector for active code set.
+   - Added "Test & Step" wizard with "TEST MUTE", "TEST UNMUTE", and "TRY NEXT SET (↻)" button to rapidly find working codes.
+   - Added custom Pronto Hex text field for testing arbitrary remote codes.
+4. **Zero-Dependency Vector Icons (`AppIcons.kt`)**:
+   - Built lightweight custom vector icons (`BackIcon`, `HelpIcon`, `SettingsIcon`, `PlayIcon`, `StopIcon`, `StepNextIcon`) adhering strictly to 44×44dp touch target standards.
+   - Avoided adding 15MB `material-icons-extended` dependency, keeping APK lightweight.
+   - Updated `MainScreen.kt`, `IrSettingsScreen.kt`, and `HelpScreen.kt` so text never wraps.
+5. **Unit Tests & Build Verification**:
+   - Created `ProntoHexConverterTest.kt` verifying frequency calculation, pulse decoding, and code set integrity.
+   - Ran `gradlew.bat testDebugUnitTest` — 24/24 tasks executed/up-to-date, BUILD SUCCESSFUL.
+   - Ran `gradlew.bat assembleDebug` — 36/36 tasks executed/up-to-date, BUILD SUCCESSFUL.
+   - Updated `app-debug.apk` in project root.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android `ConsumerIrManager` API
+  - Compose Canvas Vector Graphics
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
 
 

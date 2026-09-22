@@ -23,6 +23,10 @@
 - [x] Realistic acoustic broadcast simulation (multi-formant speech, silence dips, loudness compression)
 - [x] IR Infrared command sender (`ConsumerIrManager` for simple Mute/Unmute IR transmission)
 - [x] IR & TV Control test screen (`IrSettingsScreen.kt` with Mute/Unmute buttons, carrier frequency config, and action console)
+- [x] TV Code Set Selector & Presets (`IrCodeDatabase.kt` for Hisense Sets 1-4, Samsung, LG, Sony, Vizio, TCL)
+- [x] Universal Pronto Hex decoder & converter (`ProntoHexConverter.kt` for custom TV codes)
+- [x] Test & Step pairing wizard in `IrSettingsScreen.kt`
+- [x] Lightweight AppIcons custom vector icons (non-wrapping 44×44dp touch targets)
 - [x] Hisense Android TV IP control & webhook runner (HTTP POST / REST integration)
 - [x] Comprehensive System Help & Details screen (`HelpScreen.kt` detailing signal processing, 40-band Mel calculation, IR signals, webhooks, and input modes)
 - [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)

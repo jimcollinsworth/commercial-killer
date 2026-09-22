@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.commercialkiller.ui.components.BackIcon
 
 @Composable
 fun HelpScreen(
@@ -53,7 +56,14 @@ fun HelpScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    BackIcon(tint = Color.White)
+                }
+
+                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
                     Text(
                         text = "SYSTEM HELP & DETAILS",
                         style = MaterialTheme.typography.titleMedium,
@@ -65,13 +75,6 @@ fun HelpScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF10B981)
                     )
-                }
-
-                Button(
-                    onClick = onBack,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
-                ) {
-                    Text("BACK", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
 

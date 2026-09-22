@@ -35,6 +35,28 @@ class IrEmitterController(
     }
 
     /**
+     * Transmits a TV code set for MUTE or UNMUTE.
+     */
+    fun transmitCodeSet(codeSet: TvCodeSet, isMute: Boolean = true): Boolean {
+        return if (codeSet.protocol == "PRONTO" && !codeSet.prontoHex.isNullOrBlank()) {
+            transmitProntoHex(codeSet.prontoHex)
+        } else {
+            val cmd = if (isMute) codeSet.muteCommand else codeSet.unmuteCommand
+            val pattern = generateNecPattern(codeSet.address, cmd)
+            transmitRawPattern(codeSet.carrierFrequency, pattern)
+        }
+    }
+
+    /**
+     * Decodes a Pronto Hex string and transmits it via ConsumerIrManager.
+     */
+    fun transmitProntoHex(prontoHex: String): Boolean {
+        val decodedResult = ProntoHexConverter.decode(prontoHex)
+        val decoded = decodedResult.getOrNull() ?: return false
+        return transmitRawPattern(decoded.carrierFrequency, decoded.pattern)
+    }
+
+    /**
      * Transmits a standard 38 kHz NEC-protocol IR pulse burst for TV MUTE key.
      * NEC Protocol timing:
      * - Leader: 9000 us mark, 4500 us space

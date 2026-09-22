@@ -26,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -33,6 +34,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.commercialkiller.ui.components.HelpIcon
+import com.example.commercialkiller.ui.components.PlayIcon
+import com.example.commercialkiller.ui.components.SettingsIcon
+import com.example.commercialkiller.ui.components.StopIcon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -360,30 +365,38 @@ private fun WorkbenchHeader(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
+                IconButton(
                     onClick = { onItemClick(com.example.commercialkiller.Help) },
-                    modifier = Modifier.height(44.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155))
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0xFF334155), RoundedCornerShape(8.dp))
                 ) {
-                    Text("HELP", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    HelpIcon(tint = Color.White)
                 }
 
-                Button(
+                IconButton(
                     onClick = { onItemClick(com.example.commercialkiller.IrSettings) },
-                    modifier = Modifier.height(44.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0xFF0284C7), RoundedCornerShape(8.dp))
                 ) {
-                    Text("IR / TV", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    SettingsIcon(tint = Color.White)
                 }
 
-                Button(
+                IconButton(
                     onClick = onToggleRunning,
-                    modifier = Modifier.height(44.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isRunning) Color(0xFFDC2626) else Color(0xFF059669)
-                    )
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(
+                            if (isRunning) Color(0xFFDC2626) else Color(0xFF059669),
+                            RoundedCornerShape(8.dp)
+                        )
                 ) {
-                    Text(if (isRunning) "STOP" else "START", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (isRunning) {
+                        StopIcon(tint = Color.White)
+                    } else {
+                        PlayIcon(tint = Color.White)
+                    }
                 }
             }
         }
