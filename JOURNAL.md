@@ -444,6 +444,50 @@
   - Git CLI (`git checkout -b feature/realtime-automute-sound`)
 
 ---
+
+## 2026-09-22: Continuous Audio Playback Decoupling, Fixed 3-Item Classifier Display & Microphone Runtime Permissions
+
+> [!NOTE] User Instructions & Guidance:
+> - Tried the playing audio in file, it stutters badly, either performance issues or is playing the segments, not the full stream, synchronized with the segmentation.
+> - Also list of recognized object and confidence changes size and causes fields to jump around, fix the size to 3 items.
+> - And microphone isn't working, plays exact same mel spectrogram as the synth.
+
+### Problem & Diagnosis
+1. **Audio Stutter in File Mode**: `runFileLoop()` was coupling `audioTrack.write(WRITE_BLOCKING)` on the main coroutine with FFT computation and `delay(interval)`. Writing 100ms of audio followed by 20ms of compute + 100ms delay starved the audio DAC buffer on every cycle.
+2. **UI Jumps in Classifier Card**: `ParallelClassifierContent` and `AudioClassifierEngine` returned variable-length category lists (1 to 4 items) and a single text line when empty, causing the card to expand/shrink dynamically and bounce the entire lower screen.
+3. **Microphone Falling Back to Synth**: Tapping `MIC` failed because runtime permission `Manifest.permission.RECORD_AUDIO` was never requested at runtime via Compose. When `AudioRecord` threw `SecurityException` or uninitialized state, `runLiveMicLoop()` silently caught the exception and executed `runSimulatedLoop()`.
+
+### Root Cause & Technical Analysis
+- Audio DAC streaming must be completely decoupled from inspection/analysis timers.
+- Android 6.0+ requires interactive runtime permission dialogs via `ActivityResultContracts.RequestPermission()`. Silent fallbacks to simulated loops mask underlying hardware access issues.
+- Fixed UI card heights require fixed-length collections (padding to 3 items).
+
+### Solution & Technical Implementation
+1. **Decoupled Continuous Audio Feeder (`AudioWorkbenchEngine.kt`)**:
+   - Launched dedicated `feederJob` on `Dispatchers.IO` that continuously streams 1024-sample PCM blocks directly into `AudioTrack.write(WRITE_BLOCKING)`.
+   - Separate inspector loop runs on `intervalMs` sampling the current playback position without interfering with audio hardware output.
+   - Fixed seek flushing (`audioTrack.pause()`, `flush()`, `play()`).
+2. **Fixed 3-Item Classifier Layout (`AudioClassifierEngine.kt` & `MainScreen.kt`)**:
+   - Normalized all classifier return paths (`padToThree`) and wrapped `ParallelClassifierContent` in a stable 3-row layout with fixed 20dp row heights, completely eliminating layout shifting.
+3. **Runtime Microphone Permission & Multi-Source Capture (`MainScreen.kt` & `AudioWorkbenchEngine.kt`)**:
+   - Added `micPermissionLauncher` (`ActivityResultContracts.RequestPermission()`) and `ContextCompat.checkSelfPermission` in `MainScreen.kt`.
+   - Replaced silent simulation fallback in `runLiveMicLoop()` with diagnostic event logs and multi-source audio fallback (`VOICE_RECOGNITION`, `MIC`, `DEFAULT`).
+4. **Unit Tests & Build Verification**:
+   - Executed `gradlew.bat testDebugUnitTest` (**25/25 passing unit tests**).
+   - Executed `gradlew.bat assembleDebug` (**BUILD SUCCESSFUL in 12s**).
+   - Incremented project version to `v1.8` (versionCode 8).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android `AudioTrack` continuous IO streaming
+  - Android `AudioRecord` runtime permissions
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+  - Git CLI (`git checkout -b feature/smooth-playback-fixed-classifier`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
 
 

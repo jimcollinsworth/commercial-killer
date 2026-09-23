@@ -76,7 +76,10 @@ class AudioWorkbenchEngine(
     val tvControlManager = TvControlManager(context)
 
     private var loadedAudio: DecodedAudio? = null
-    private var fileSampleOffset = 0
+    @Volatile
+    private var filePlaybackOffset = 0
+    @Volatile
+    private var isFileSeeking = false
     private var isTvCurrentlyMuted = false
     private var programConsecutiveFrames = 0
 
@@ -145,7 +148,8 @@ class AudioWorkbenchEngine(
         return try {
             val decoded = fileDecoder.decode(appContext, uri)
             loadedAudio = decoded
-            fileSampleOffset = 0
+            filePlaybackOffset = 0
+            isFileSeeking = false
 
             _state.value = _state.value.copy(
                 loadedFileName = decoded.fileName,
@@ -167,7 +171,8 @@ class AudioWorkbenchEngine(
     fun seekFile(progress: Float) {
         val audio = loadedAudio ?: return
         val clampedProgress = progress.coerceIn(0f, 1f)
-        fileSampleOffset = (audio.samples.size * clampedProgress).toInt()
+        filePlaybackOffset = (audio.samples.size * clampedProgress).toInt()
+        isFileSeeking = true
         val posMs = (audio.durationMs * clampedProgress).toLong()
         _state.value = _state.value.copy(
             fileProgress = clampedProgress,
@@ -380,40 +385,62 @@ class AudioWorkbenchEngine(
             e.printStackTrace()
         }
 
+        // 1. Dedicated Audio Streaming Coroutine (Feeder - continuous playback without buffer underruns)
+        val feederJob = scope.launch(Dispatchers.IO) {
+            val streamBufferChunk = 1024
+            val shortBuffer = ShortArray(streamBufferChunk)
+
+            while (isActive && audioTrack != null) {
+                if (isFileSeeking) {
+                    try {
+                        audioTrack.pause()
+                        audioTrack.flush()
+                        audioTrack.play()
+                    } catch (ignored: Exception) {}
+                    isFileSeeking = false
+                }
+
+                val total = audio.samples.size
+                var offset = filePlaybackOffset
+                if (offset >= total) {
+                    offset = 0
+                    filePlaybackOffset = 0
+                }
+
+                val remaining = total - offset
+                val count = streamBufferChunk.coerceAtMost(remaining)
+                if (count > 0) {
+                    for (i in 0 until count) {
+                        val sample = audio.samples[offset + i]
+                        shortBuffer[i] = (sample * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+                    }
+                    val written = audioTrack.write(shortBuffer, 0, count, AudioTrack.WRITE_BLOCKING)
+                    if (written > 0) {
+                        filePlaybackOffset += written
+                    }
+                } else {
+                    delay(10)
+                }
+            }
+        }
+
+        // 2. Spectrogram & Classification Inspector Loop
         try {
             while (scope.isActive) {
                 val interval = _state.value.intervalMs
                 val totalSamples = audio.samples.size
+                val currentOffset = filePlaybackOffset.coerceIn(0, totalSamples.coerceAtLeast(1) - 1)
 
-                if (fileSampleOffset >= totalSamples) {
-                    // Loop back to start of file
-                    fileSampleOffset = 0
-                }
-
-                // Calculate samples corresponding to the elapsed interval time
-                val samplesToAdvance = ((sampleRate.toLong() * interval) / 1000L).toInt().coerceAtLeast(chunkSize)
-                val remaining = totalSamples - fileSampleOffset
-                val actualSamplesCount = samplesToAdvance.coerceAtMost(remaining)
-
-                // 1. Play entire interval audio block to speaker in real-time
-                if (actualSamplesCount > 0 && audioTrack != null) {
-                    val shortBuffer = ShortArray(actualSamplesCount)
-                    for (i in 0 until actualSamplesCount) {
-                        val sample = audio.samples[fileSampleOffset + i]
-                        shortBuffer[i] = (sample * 32767f).toInt().coerceIn(-32768, 32767).toShort()
-                    }
-                    audioTrack.write(shortBuffer, 0, actualSamplesCount, AudioTrack.WRITE_BLOCKING)
-                }
-
-                // 2. Extract 512-sample analysis window for Mel-spectrogram & classifier
-                val analysisSamples = FloatArray(chunkSize)
-                val analysisCount = chunkSize.coerceAtMost(actualSamplesCount)
-                System.arraycopy(audio.samples, fileSampleOffset, analysisSamples, 0, analysisCount)
-
-                fileSampleOffset += actualSamplesCount
-
-                val progress = fileSampleOffset.toFloat() / totalSamples.coerceAtLeast(1)
+                val progress = currentOffset.toFloat() / totalSamples.coerceAtLeast(1)
                 val currentPosMs = (audio.durationMs * progress).toLong()
+
+                // Extract 512-sample analysis window from current audio stream playback position
+                val analysisSamples = FloatArray(chunkSize)
+                val available = (totalSamples - currentOffset).coerceAtLeast(0)
+                val analysisCount = chunkSize.coerceAtMost(available)
+                if (analysisCount > 0) {
+                    System.arraycopy(audio.samples, currentOffset, analysisSamples, 0, analysisCount)
+                }
 
                 // Parallel Execution: Mel-Spectrogram + Audio Classifier
                 val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(analysisSamples) }
@@ -472,6 +499,7 @@ class AudioWorkbenchEngine(
                 delay(interval)
             }
         } finally {
+            feederJob.cancel()
             try {
                 audioTrack?.stop()
                 audioTrack?.release()
@@ -486,29 +514,57 @@ class AudioWorkbenchEngine(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(1024)
+        ).coerceAtLeast(4096)
+
+        val logs = ArrayDeque<WorkbenchEvent>(50)
+        val history = ArrayDeque<FloatArray>(30)
+        val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
         var audioRecord: AudioRecord? = null
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
+        val audioSources = intArrayOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT
+        )
+
+        for (source in audioSources) {
+            try {
+                val record = AudioRecord(
+                    source,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord = record
+                    break
+                } else {
+                    record.release()
+                }
+            } catch (ignored: Exception) {}
+        }
+
+        if (audioRecord == null || audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+            val event = WorkbenchEvent(
+                timestamp = dateFormat.format(Date()),
+                distance = 0f,
+                threshold = _state.value.threshold,
+                description = "[MIC ERROR] Microphone not initialized. Verify RECORD_AUDIO permission in Android settings."
             )
+            logs.addLast(event)
+            _state.value = _state.value.copy(
+                eventLogs = logs.toList().reversed(),
+                spectrogramHistory = emptyList(),
+                currentDistance = 0f
+            )
+            return
+        }
 
-            if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
-                runSimulatedLoop()
-                return
-            }
-
+        try {
             audioRecord.startRecording()
             val shortBuffer = ShortArray(512)
             val floatSamples = FloatArray(512)
-            val history = ArrayDeque<FloatArray>(30)
-            val logs = ArrayDeque<WorkbenchEvent>(50)
-            val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
             while (scope.isActive) {
                 val interval = _state.value.intervalMs
@@ -575,11 +631,18 @@ class AudioWorkbenchEngine(
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            runSimulatedLoop()
+            val event = WorkbenchEvent(
+                timestamp = dateFormat.format(Date()),
+                distance = 0f,
+                threshold = _state.value.threshold,
+                description = "[MIC EXCEPTION] ${e.message ?: "AudioRecord error"}"
+            )
+            logs.addLast(event)
+            _state.value = _state.value.copy(eventLogs = logs.toList().reversed())
         } finally {
             try {
-                audioRecord?.stop()
-                audioRecord?.release()
+                audioRecord.stop()
+                audioRecord.release()
             } catch (ignored: Exception) {}
         }
     }
