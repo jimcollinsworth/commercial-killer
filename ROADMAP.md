@@ -177,4 +177,71 @@ By converting the Mel-spectrogram buffer into a standardized 2D image bitmap (e.
    - Wire vision model transition thresholding directly to `TvControlManager.sendMute()`.
 
 ---
+
+## Technical Proposal: Cross-Modal Audio-Visual Fingerprint Caching for Unmuting & Program Return
+
+### 1. The Core Architecture & Acoustic Paradox Resolution
+When the application mutes physical television speakers or soundbars via IR or Webhook, any ambient room microphone immediately goes deaf to the broadcast audio.
+
+By combining the **Camera Video Stream** with **Audio Mel-Spectrogram Tracking**, the application solves this paradox through **Cross-Modal Co-Occurrence Caching**:
+
+```
+[Normal Program Playing]
+       │
+       ├──► Audio Pipeline ──► Continuous Mel-Spectrogram Analysis
+       └──► Camera Pipeline ─► TV Screen Scene Recognition (Palette, Channel Bug, Motion)
+       │
+       ▼
+[Joint Audio-Visual Program Baseline Cached]
+ (Locks pre-break scene palette, channel logo presence, and acoustic profile)
+       │
+       ▼ [Commercial Detected]
+ 1. Send MUTE (IR / Webhook) ──► TV/Soundbar goes silent
+ 2. Freeze "Pre-Break Program Fingerprint" in Fast Memory Cache
+       │
+       ▼ [Muted Commercial Pod]
+ • Microphone is silent (no audio data available)
+ • Camera continues monitoring muted TV screen:
+     - Detects commercial characteristics (rapid scene cuts, missing station bug, banner ads)
+     - Continuously computes visual distance to Cached Program Fingerprint
+       │
+       ▼ [Program Returns on Video]
+ Visual frame matches Cached Program Fingerprint:
+   ✓ Station watermark / logo reappears
+   ✓ Color palette & scene cadence match pre-break baseline
+       │
+       ▼
+ 1. Send UNMUTE (IR / Webhook) ──► TV/Soundbar audio restored
+ 2. Re-engage Live Microphone & Spectrogram Loop
+```
+
+---
+
+### 2. Key Components of the Cached Program Fingerprint
+
+1. **Station Bug / Watermark Anchor**:
+   - During normal broadcast, networks anchor a transparent or semi-opaque watermark logo in a screen corner (e.g., lower-right).
+   - The camera pipeline caches the corner ROI (Region of Interest) patch.
+   - Commercials almost universally strip this watermark. When the exact template/feature reappears in that ROI, it acts as an immediate trigger for program resumption.
+2. **Visual Color Distribution & Luminance Signature**:
+   - Pre-break program scenes (e.g., sports green field, sitcom interior, newsroom lighting) maintain a characteristic color histogram.
+   - Ads introduce distinct saturated palettes and high-contrast color shifts.
+3. **Temporal Cut Cadence**:
+   - Program content typically averages 4–8 seconds per camera shot.
+   - Commercials pack 10–25 cuts into a 30-second spot (0.8–1.5s per shot). When cut frequency drops back to program baseline, confidence increases.
+
+---
+
+### 3. Implementation Phasing
+
+- **Phase 1 (Program Signature Cache Module)**:
+  - Create `ProgramFingerprintCache.kt` storing visual ROI patches, color gamut statistics, and pre-break Mel-spectrogram descriptors.
+- **Phase 2 (Video Stream Mute-Watcher Engine)**:
+  - While `isTvCurrentlyMuted == true`, switch detection driver from `AudioWorkbenchEngine` to `CameraScreen` / video frame evaluator.
+  - Calculate frame similarity against `ProgramFingerprintCache`.
+- **Phase 3 (Unified Multimodal State Machine)**:
+  - Tie transition detection to automatic `TvControlManager.sendMute()` and return detection to `TvControlManager.sendUnmute()`.
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
