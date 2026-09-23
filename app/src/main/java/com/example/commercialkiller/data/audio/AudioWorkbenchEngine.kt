@@ -9,6 +9,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Process
 import com.example.commercialkiller.data.action.TvControlManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -82,6 +84,7 @@ class AudioWorkbenchEngine(
     private var isFileSeeking = false
     private var isTvCurrentlyMuted = false
     private var programConsecutiveFrames = 0
+    private var isPaused = false
 
     private val _state = MutableStateFlow(
         WorkbenchState(
@@ -101,14 +104,17 @@ class AudioWorkbenchEngine(
         comparator.reset()
         isTvCurrentlyMuted = false
         programConsecutiveFrames = 0
+        isPaused = false
 
-        _state.value = _state.value.copy(
-            isRunning = true,
-            sourceMode = sourceMode,
-            activeClassifierModel = classifier.getActiveModelName(),
-            tvControlMethod = tvControlManager.controlMethod.name,
-            isTvMuted = false
-        )
+        _state.update { current ->
+            current.copy(
+                isRunning = true,
+                sourceMode = sourceMode,
+                activeClassifierModel = classifier.getActiveModelName(),
+                tvControlMethod = tvControlManager.controlMethod.name,
+                isTvMuted = false
+            )
+        }
 
         engineJob = scope.launch {
             when (sourceMode) {
@@ -123,7 +129,29 @@ class AudioWorkbenchEngine(
         start(if (useLiveMic) AudioSourceMode.MIC else AudioSourceMode.SYNTH)
     }
 
+    /**
+     * Pauses active audio synthesis, playback, or mic processing when the host Activity is STOPPED.
+     * Preserves state and playback position so it can resume cleanly.
+     */
+    fun pause() {
+        if (!_state.value.isRunning || isPaused) return
+        isPaused = true
+        engineJob?.cancel()
+        engineJob = null
+        _state.update { it.copy(isRunning = false) }
+    }
+
+    /**
+     * Resumes playback/capture when host Activity returns to STARTED/RESUMED.
+     */
+    fun resume() {
+        if (!isPaused) return
+        isPaused = false
+        start(_state.value.sourceMode)
+    }
+
     fun stop() {
+        isPaused = false
         engineJob?.cancel()
         engineJob = null
         if (isTvCurrentlyMuted && tvControlManager.isAutoMuteEnabled) {
@@ -132,16 +160,16 @@ class AudioWorkbenchEngine(
             }
         }
         isTvCurrentlyMuted = false
-        _state.value = _state.value.copy(isRunning = false, isEventTriggered = false, isTvMuted = false)
+        _state.update { it.copy(isRunning = false, isEventTriggered = false, isTvMuted = false) }
     }
 
     fun setThreshold(newThreshold: Float) {
         comparator.threshold = newThreshold
-        _state.value = _state.value.copy(threshold = newThreshold)
+        _state.update { it.copy(threshold = newThreshold) }
     }
 
     fun setInterval(newIntervalMs: Long) {
-        _state.value = _state.value.copy(intervalMs = newIntervalMs)
+        _state.update { it.copy(intervalMs = newIntervalMs) }
     }
 
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {
@@ -151,13 +179,15 @@ class AudioWorkbenchEngine(
             filePlaybackOffset = 0
             isFileSeeking = false
 
-            _state.value = _state.value.copy(
-                loadedFileName = decoded.fileName,
-                fileDurationMs = decoded.durationMs,
-                filePositionMs = 0L,
-                fileProgress = 0f,
-                sourceMode = AudioSourceMode.FILE
-            )
+            _state.update { current ->
+                current.copy(
+                    loadedFileName = decoded.fileName,
+                    fileDurationMs = decoded.durationMs,
+                    filePositionMs = 0L,
+                    fileProgress = 0f,
+                    sourceMode = AudioSourceMode.FILE
+                )
+            }
 
             // Auto-start playback of loaded file
             start(AudioSourceMode.FILE)
@@ -174,10 +204,12 @@ class AudioWorkbenchEngine(
         filePlaybackOffset = (audio.samples.size * clampedProgress).toInt()
         isFileSeeking = true
         val posMs = (audio.durationMs * clampedProgress).toLong()
-        _state.value = _state.value.copy(
-            fileProgress = clampedProgress,
-            filePositionMs = posMs
-        )
+        _state.update { current ->
+            current.copy(
+                fileProgress = clampedProgress,
+                filePositionMs = posMs
+            )
+        }
     }
 
     private fun handleAutoMuting(
@@ -241,6 +273,8 @@ class AudioWorkbenchEngine(
         val history = ArrayDeque<FloatArray>(30)
         val logs = ArrayDeque<WorkbenchEvent>(50)
         val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+        val waveformView = FloatArray(256)
+        val samples = FloatArray(chunkSize)
 
         while (scope.isActive) {
             val interval = _state.value.intervalMs
@@ -248,7 +282,6 @@ class AudioWorkbenchEngine(
 
             // 60-tick cycle (6.0s at 100ms interval)
             val phase = tick % 60
-            val samples = FloatArray(chunkSize)
 
             val isSilenceGap = phase in 35..36
             val isCommercialSegment = phase in 37..59
@@ -325,21 +358,22 @@ class AudioWorkbenchEngine(
             )
 
             // Downsampled waveform for oscilloscope (256 samples)
-            val waveformView = FloatArray(256)
             for (i in 0 until 256) {
                 waveformView[i] = samples[i * (chunkSize / 256)]
             }
 
-            _state.value = _state.value.copy(
-                waveform = waveformView,
-                spectrogramHistory = history.toList(),
-                currentDistance = compResult.distance,
-                isEventTriggered = compResult.isSignificant,
-                isTvMuted = isTvCurrentlyMuted,
-                tvControlMethod = tvControlManager.controlMethod.name,
-                eventLogs = logs.toList().reversed(),
-                classifierScores = classificationScores
-            )
+            _state.update { current ->
+                current.copy(
+                    waveform = waveformView.clone(),
+                    spectrogramHistory = history.toList(),
+                    currentDistance = compResult.distance,
+                    isEventTriggered = compResult.isSignificant,
+                    isTvMuted = isTvCurrentlyMuted,
+                    tvControlMethod = tvControlManager.controlMethod.name,
+                    eventLogs = logs.toList().reversed(),
+                    classifierScores = classificationScores
+                )
+            }
 
             delay(interval)
         }
@@ -375,7 +409,7 @@ class AudioWorkbenchEngine(
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(minBufSize * 2)
+                .setBufferSizeInBytes(minBufSize * 4) // Quadruple buffer to prevent playback underruns
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
@@ -385,9 +419,13 @@ class AudioWorkbenchEngine(
             e.printStackTrace()
         }
 
-        // 1. Dedicated Audio Streaming Coroutine (Feeder - continuous playback without buffer underruns)
+        // 1. Dedicated Audio Streaming Coroutine (Feeder - URGENT_AUDIO priority without buffer underruns)
         val feederJob = scope.launch(Dispatchers.IO) {
-            val streamBufferChunk = 1024
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            } catch (ignored: Exception) {}
+
+            val streamBufferChunk = 2048 // 128ms chunks prevent audio jitter
             val shortBuffer = ShortArray(streamBufferChunk)
 
             while (isActive && audioTrack != null) {
@@ -419,10 +457,13 @@ class AudioWorkbenchEngine(
                         filePlaybackOffset += written
                     }
                 } else {
-                    delay(10)
+                    delay(5)
                 }
             }
         }
+
+        val analysisSamples = FloatArray(chunkSize)
+        val waveformView = FloatArray(256)
 
         // 2. Spectrogram & Classification Inspector Loop
         try {
@@ -435,11 +476,13 @@ class AudioWorkbenchEngine(
                 val currentPosMs = (audio.durationMs * progress).toLong()
 
                 // Extract 512-sample analysis window from current audio stream playback position
-                val analysisSamples = FloatArray(chunkSize)
                 val available = (totalSamples - currentOffset).coerceAtLeast(0)
                 val analysisCount = chunkSize.coerceAtMost(available)
                 if (analysisCount > 0) {
                     System.arraycopy(audio.samples, currentOffset, analysisSamples, 0, analysisCount)
+                }
+                for (i in analysisCount until chunkSize) {
+                    analysisSamples[i] = 0f
                 }
 
                 // Parallel Execution: Mel-Spectrogram + Audio Classifier
@@ -478,23 +521,24 @@ class AudioWorkbenchEngine(
                     threshold = compResult.threshold
                 )
 
-                val waveformView = FloatArray(256)
                 for (i in 0 until 256) {
                     waveformView[i] = analysisSamples[i * (chunkSize / 256)]
                 }
 
-                _state.value = _state.value.copy(
-                    waveform = waveformView,
-                    spectrogramHistory = history.toList(),
-                    currentDistance = compResult.distance,
-                    isEventTriggered = compResult.isSignificant,
-                    isTvMuted = isTvCurrentlyMuted,
-                    tvControlMethod = tvControlManager.controlMethod.name,
-                    eventLogs = logs.toList().reversed(),
-                    classifierScores = classificationScores,
-                    filePositionMs = currentPosMs,
-                    fileProgress = progress
-                )
+                _state.update { current ->
+                    current.copy(
+                        waveform = waveformView.clone(),
+                        spectrogramHistory = history.toList(),
+                        currentDistance = compResult.distance,
+                        isEventTriggered = compResult.isSignificant,
+                        isTvMuted = isTvCurrentlyMuted,
+                        tvControlMethod = tvControlManager.controlMethod.name,
+                        eventLogs = logs.toList().reversed(),
+                        classifierScores = classificationScores,
+                        filePositionMs = currentPosMs,
+                        fileProgress = progress
+                    )
+                }
 
                 delay(interval)
             }
@@ -553,26 +597,34 @@ class AudioWorkbenchEngine(
                 description = "[MIC ERROR] Microphone not initialized. Verify RECORD_AUDIO permission in Android settings."
             )
             logs.addLast(event)
-            _state.value = _state.value.copy(
-                eventLogs = logs.toList().reversed(),
-                spectrogramHistory = emptyList(),
-                currentDistance = 0f
-            )
+            _state.update { current ->
+                current.copy(
+                    eventLogs = logs.toList().reversed(),
+                    spectrogramHistory = emptyList(),
+                    currentDistance = 0f
+                )
+            }
             return
         }
 
         try {
             audioRecord.startRecording()
-            val shortBuffer = ShortArray(512)
-            val floatSamples = FloatArray(512)
+            val chunkSize = 512
+            val shortBuffer = ShortArray(chunkSize)
+            val floatSamples = FloatArray(chunkSize)
+            val waveformView = FloatArray(256)
 
             while (scope.isActive) {
-                val interval = _state.value.intervalMs
-                val readCount = audioRecord.read(shortBuffer, 0, shortBuffer.size)
+                // AudioRecord.read in blocking mode naturally synchronizes loop to 512 / 16000 = 32ms cadence
+                val readCount = audioRecord.read(shortBuffer, 0, chunkSize)
 
                 if (readCount > 0) {
                     for (i in 0 until readCount) {
                         floatSamples[i] = (shortBuffer[i] / 32768.0f).coerceIn(-1f, 1f)
+                    }
+                    // Clear tail if partial read
+                    for (i in readCount until chunkSize) {
+                        floatSamples[i] = 0f
                     }
 
                     // Parallel: Mel-spectrogram & Classifier
@@ -611,23 +663,25 @@ class AudioWorkbenchEngine(
                         threshold = compResult.threshold
                     )
 
-                    val waveformView = FloatArray(256)
                     for (i in 0 until 256) {
                         waveformView[i] = floatSamples[i * 2]
                     }
 
-                    _state.value = _state.value.copy(
-                        waveform = waveformView,
-                        spectrogramHistory = history.toList(),
-                        currentDistance = compResult.distance,
-                        isEventTriggered = compResult.isSignificant,
-                        isTvMuted = isTvCurrentlyMuted,
-                        tvControlMethod = tvControlManager.controlMethod.name,
-                        eventLogs = logs.toList().reversed(),
-                        classifierScores = classificationScores
-                    )
+                    _state.update { current ->
+                        current.copy(
+                            waveform = waveformView.clone(),
+                            spectrogramHistory = history.toList(),
+                            currentDistance = compResult.distance,
+                            isEventTriggered = compResult.isSignificant,
+                            isTvMuted = isTvCurrentlyMuted,
+                            tvControlMethod = tvControlManager.controlMethod.name,
+                            eventLogs = logs.toList().reversed(),
+                            classifierScores = classificationScores
+                        )
+                    }
+                } else if (readCount < 0) {
+                    delay(50)
                 }
-                delay(interval)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -638,7 +692,7 @@ class AudioWorkbenchEngine(
                 description = "[MIC EXCEPTION] ${e.message ?: "AudioRecord error"}"
             )
             logs.addLast(event)
-            _state.value = _state.value.copy(eventLogs = logs.toList().reversed())
+            _state.update { it.copy(eventLogs = logs.toList().reversed()) }
         } finally {
             try {
                 audioRecord.stop()

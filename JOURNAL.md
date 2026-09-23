@@ -520,7 +520,90 @@
   - Codebase documentation tools (`PLANNING.md`, `ROADMAP.md`, `JOURNAL.md`)
 
 ---
+
+## 2026-09-23: Tview USB-C IR Blaster Hardware Support & Dual TV/Soundbar Control (v1.9)
+
+> [!NOTE] User Instructions & Guidance:
+> - Support external Tview USB-C IR transmitter dongle (`10C4:8468`).
+> - TV is Hisense 55U8G.
+> - Add soundbar control (review support + keep webhooks).
+
+### Problem & Diagnosis
+- Some devices (e.g. Pixel 8/9/10/11) lack internal `ConsumerIrManager` hardware.
+- Users with external USB-C IR blasters (Tview / Tiqiaa / ElkSmart) require Android USB Host API (`UsbManager`) communication.
+- Users with separate soundbar audio systems need synchronized mute/unmute commands dispatched simultaneously to both TV and Soundbar, with Webhook redundancy.
+
+### Solution & Standard Procedure
+1. **USB Host Permissions & Device Filtering**:
+   - Added `android.hardware.usb.host` feature declaration and `device_filter.xml` for Silicon Labs vendor `0x10C4` and product `0x8468`.
+2. **`UsbIrDongleController`**:
+   - Implemented USB bulk transfer handshake (`0xFC 0xFC 0xFC 0xFC`) and packet formatting (`0xFF 0xFF 0xFF 0xFF` header + 56-byte payload chunks).
+3. **Soundbar IR Code Sets & Dual Dispatching**:
+   - Expanded `IrCodeDatabase` with soundbar presets (Vizio, Samsung, Bose, LG, Sony, Yamaha, Polk, Custom Pronto Hex).
+   - Updated `TvControlManager` with `TargetDevice` (`TV_ONLY`, `SOUNDBAR_ONLY`, `BOTH`) for dual-channel concurrent dispatching.
+4. **IR Settings UI**:
+   - Added USB hardware status badge (`READY` / `PERMISSION_REQUIRED` / `NOT_CONNECTED`), target device selector, and soundbar code set selector.
+5. **Unit Tests & Verification**:
+   - Implemented `UsbIrDongleControllerTest` and `TvControlManagerTest` (**27 passing unit tests**).
+   - Incremented version to `v1.9` (versionCode 9).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android USB Host API (`UsbManager`, `UsbDeviceConnection`, `UsbEndpoint`)
+  - Gradle 9.1.0 (`testDebugUnitTest`)
+
+---
+
+## 2026-09-23: Architectural Refactor: Adaptive UI, Host Lifecycle Synchronization & Audio Performance (v2.0)
+
+> [!NOTE] User Instructions & Guidance:
+> - Refactor recent Android skills into a single `android-tips-and-debugging` master skill with modular reference documents.
+> - Review Commercial Killer codebase against the new skills.
+> - Implement all recommendations: audio performance/stuttering fix, microphone synchronization, StateFlow atomic updates, Compose host lifecycle synchronization, and Android 17 adaptive layouts.
+
+### Problem & Diagnosis
+- **Audio Stuttering**: Thread contention between `AudioTrack.write` feeder coroutine and heavy FFT/classifier inference on `Dispatchers.Default`, coupled with GC allocation pressure in 100ms loops.
+- **Microphone Drift**: `runLiveMicLoop()` added `delay(interval)` after blocking `AudioRecord.read()`, causing hardware buffers to accumulate lag and desynchronize.
+- **Background Resource Leak**: `DisposableEffect(Unit)` in `MainScreen` never triggered `onDispose` when pressing Home or locking the screen, causing audio playback/synthesis to waste battery in the background.
+- **Concurrency Races**: `AudioWorkbenchEngine` updated state via non-atomic `_state.value = _state.value.copy(...)` across concurrent asynchronous coroutines.
+- **Stretched Layouts**: Layouts lacked `WindowSizeClass` policies and bounded containers (`widthIn`), stretching awkwardly across 1000dp+ on tablets.
+
+### Solution & Standard Procedure
+1. **Audio Performance & Thread Isolation (`AudioWorkbenchEngine.kt`)**:
+   - Set playback feeder coroutine priority to `Process.THREAD_PRIORITY_URGENT_AUDIO`.
+   - Increased `AudioTrack` buffer multiplier to 4x and buffer chunks to 2048 samples (128ms) to prevent underruns.
+   - Pre-allocated reusable arrays (`analysisSamples`, `waveformView`) to eliminate hot-loop GC pressure.
+   - Removed artificial `delay()` in `runLiveMicLoop()`, allowing hardware-clocked `AudioRecord.read()` to dictate timing with zero drift.
+2. **Atomic State Updates**:
+   - Replaced all `_state.value = _state.value.copy(...)` calls with thread-safe atomic `_state.update { current -> current.copy(...) }`.
+3. **Host Lifecycle Synchronization (`MainScreen.kt`)**:
+   - Integrated `LifecycleResumeEffect(engine)` to automatically call `engine.pause()` on `ON_PAUSE` / `ON_STOP` and `engine.resume()` on `ON_RESUME`.
+4. **Android 17 Adaptive UI Architecture (`MainScreen.kt` & `IrSettingsScreen.kt`)**:
+   - Integrated `currentWindowAdaptiveInfo().windowSizeClass` using modern `isWidthAtLeastBreakpoint` and `isHeightAtLeastBreakpoint` APIs.
+   - **Expanded Displays (`sw600dp+` / Tablets / Foldables)**: Split into an adaptive two-pane layout (Left: Audio Stream, Oscilloscope & Waterfall; Right: Distance Meter, Classifier Scores & Event Console).
+   - **Compact Displays (Phones)**: Clamped width to `Modifier.widthIn(max = 640.dp)` with `imePadding()` and `verticalScroll()` for short landscape windows.
+5. **Testing & Version Bump**:
+   - Incremented version to `v2.0` (versionCode 10).
+   - Verified Gradle unit tests (`testDebugUnitTest` - **27 passing unit tests**).
+   - Built debug APK (`assembleDebug` - **BUILD SUCCESSFUL in 12s**).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Android Window Size Class API (`androidx.compose.material3.adaptive:adaptive:1.0.1`)
+  - Android Lifecycle Compose (`androidx.lifecycle:lifecycle-runtime-compose:2.10.0`)
+  - Android Studio JBR OpenJDK 21 (`C:\Program Files\Android\Android Studio\jbr`)
+  - Gradle 9.1.0 (`testDebugUnitTest`, `assembleDebug`)
+  - Git CLI (`feature/adaptive-audio-lifecycle-refactor`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
 
 
 
