@@ -52,7 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.commercialkiller.data.action.ControlMethod
 import com.example.commercialkiller.data.action.IrCodeDatabase
+import com.example.commercialkiller.data.action.TargetDevice
 import com.example.commercialkiller.data.action.TvControlManager
+import com.example.commercialkiller.data.action.UsbDongleStatus
 import com.example.commercialkiller.ui.components.BackIcon
 import com.example.commercialkiller.ui.components.StepNextIcon
 import kotlinx.coroutines.launch
@@ -69,17 +71,31 @@ fun IrSettingsScreen(
     val manager = remember { TvControlManager(context) }
     val coroutineScope = rememberCoroutineScope()
 
-    val codeSets = IrCodeDatabase.codeSets
-    var selectedIndex by remember { mutableIntStateOf(manager.selectedCodeSetIndex.coerceIn(0, codeSets.size - 1)) }
-    val selectedCodeSet = codeSets.getOrElse(selectedIndex) { codeSets.first() }
+    val tvCodeSets = IrCodeDatabase.tvCodeSets
+    val soundbarCodeSets = IrCodeDatabase.soundbarCodeSets
 
+    var targetDevice by remember { mutableStateOf(manager.targetDevice) }
     var controlMethod by remember { mutableStateOf(manager.controlMethod) }
     var autoMuteEnabled by remember { mutableStateOf(manager.isAutoMuteEnabled) }
     var webhookUrl by remember { mutableStateOf(manager.webhookUrl) }
-    var customProntoHex by remember {
-        mutableStateOf(manager.customProntoHex.ifEmpty { selectedCodeSet.prontoHex ?: "" })
+
+    var selectedTvIndex by remember { mutableIntStateOf(manager.selectedTvCodeSetIndex.coerceIn(0, tvCodeSets.size - 1)) }
+    val selectedTvSet = tvCodeSets.getOrElse(selectedTvIndex) { tvCodeSets.first() }
+
+    var selectedSoundbarIndex by remember { mutableIntStateOf(manager.selectedSoundbarCodeSetIndex.coerceIn(0, soundbarCodeSets.size - 1)) }
+    val selectedSoundbarSet = soundbarCodeSets.getOrElse(selectedSoundbarIndex) { soundbarCodeSets.first() }
+
+    var customTvProntoHex by remember {
+        mutableStateOf(manager.customProntoHex.ifEmpty { selectedTvSet.prontoHex ?: "" })
     }
-    var dropdownExpanded by remember { mutableStateOf(false) }
+    var customSoundbarProntoHex by remember {
+        mutableStateOf(manager.customSoundbarProntoHex.ifEmpty { selectedSoundbarSet.prontoHex ?: "" })
+    }
+
+    var tvDropdownExpanded by remember { mutableStateOf(false) }
+    var soundbarDropdownExpanded by remember { mutableStateOf(false) }
+
+    var usbDongleStatus by remember { mutableStateOf(manager.getUsbDongleStatus()) }
 
     val logs = remember { mutableStateListOf<String>() }
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
@@ -98,7 +114,7 @@ fun IrSettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Header Bar with Back Icon
+            // Header Bar with Back Icon & Hardware Status Badges
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -113,30 +129,45 @@ fun IrSettingsScreen(
 
                 Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
                     Text(
-                        text = "TV CONTROL & AUTOMATION",
+                        text = "TV & SOUNDBAR AUTOMATION",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
                     Text(
-                        text = "WEBHOOK & IR CODE CONFIGURATION",
+                        text = "WEBHOOK + TVIEW USB IR DUAL CONTROL",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF38BDF8)
                     )
                 }
 
-                // Hardware Status Badge
-                val hasIr = manager.hasIrHardware()
+                // Interactive USB / IR Hardware Status Badge
+                val (badgeColor, badgeText, isActionable) = when (usbDongleStatus) {
+                    UsbDongleStatus.READY -> Triple(Color(0xFF059669), "TVIEW USB READY", false)
+                    UsbDongleStatus.PERMISSION_REQUIRED -> Triple(Color(0xFFD97706), "TVIEW (TAP TO GRANT)", true)
+                    UsbDongleStatus.NOT_CONNECTED -> {
+                        if (manager.hasInternalIr()) {
+                            Triple(Color(0xFF059669), "INTERNAL IR", false)
+                        } else {
+                            Triple(Color(0xFF475569), "NO USB DONGLE", true)
+                        }
+                    }
+                }
+
                 Box(
                     modifier = Modifier
-                        .background(
-                            if (hasIr) Color(0xFF059669) else Color(0xFF475569),
-                            RoundedCornerShape(6.dp)
-                        )
-                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                        .background(badgeColor, RoundedCornerShape(6.dp))
+                        .clickable(enabled = isActionable) {
+                            addLog("Scanning & requesting USB permission for Tview...")
+                            manager.requestUsbPermission { granted ->
+                                usbDongleStatus = manager.getUsbDongleStatus()
+                                addLog("USB Permission result: ${if (granted) "GRANTED (Ready)" else "DENIED"}")
+                            }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = if (hasIr) "IR READY" else "IP / WEBHOOK",
+                        text = badgeText,
                         color = Color.White,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -144,15 +175,14 @@ fun IrSettingsScreen(
                 }
             }
 
-            // Mode Selector & Auto-Mute Switch Card
+            // Target Device Selector Card
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Method Selector Tabs
                     Text(
-                        text = "ACTIVE CONTROL METHOD",
+                        text = "TARGET OUTPUT DEVICE",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF94A3B8),
                         fontWeight = FontWeight.Bold
@@ -161,8 +191,13 @@ fun IrSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        ControlMethod.values().forEach { method ->
-                            val isSelected = controlMethod == method
+                        TargetDevice.values().forEach { target ->
+                            val isSelected = targetDevice == target
+                            val label = when (target) {
+                                TargetDevice.TV_ONLY -> "TV ONLY"
+                                TargetDevice.SOUNDBAR_ONLY -> "SOUNDBAR"
+                                TargetDevice.BOTH -> "BOTH (TV + SOUNDBAR)"
+                            }
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
@@ -171,16 +206,16 @@ fun IrSettingsScreen(
                                     .background(if (isSelected) Color(0xFF0284C7) else Color(0xFF0F172A))
                                     .border(1.dp, if (isSelected) Color(0xFF38BDF8) else Color(0xFF334155), RoundedCornerShape(6.dp))
                                     .clickable {
-                                        controlMethod = method
-                                        manager.controlMethod = method
-                                        addLog("Active Control Method: ${method.name}")
+                                        targetDevice = target
+                                        manager.targetDevice = target
+                                        addLog("Target Device changed: ${target.name}")
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = method.name,
+                                    text = label,
                                     color = if (isSelected) Color.White else Color.LightGray,
-                                    fontSize = 11.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                 )
                             }
@@ -193,7 +228,7 @@ fun IrSettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Auto-Mute on Detection",
                                 color = Color.White,
@@ -201,7 +236,7 @@ fun IrSettingsScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Mutes TV during commercial breaks, unmutes on program return",
+                                text = "Mutes target during commercials, restores volume on return",
                                 color = Color.LightGray,
                                 fontSize = 10.sp
                             )
@@ -222,64 +257,165 @@ fun IrSettingsScreen(
                 }
             }
 
-            // Webhook Configuration Card (Visible when WEBHOOK or BOTH)
-            if (controlMethod == ControlMethod.WEBHOOK || controlMethod == ControlMethod.BOTH) {
+            // TV Configuration Section (Visible when TV_ONLY or BOTH)
+            if (targetDevice == TargetDevice.TV_ONLY || targetDevice == TargetDevice.BOTH) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "SMART TV WEBHOOK URL (HISENSE / ANDROID TV)",
+                            text = "TV CONTROL METHOD & PRESETS",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF94A3B8),
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
 
-                        OutlinedTextField(
-                            value = webhookUrl,
-                            onValueChange = {
-                                webhookUrl = it
-                                manager.webhookUrl = it
-                            },
-                            label = { Text("Webhook URL", fontSize = 10.sp) },
+                        // TV Method Tabs (Webhook, IR, Both)
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color(0xFF0284C7),
-                                unfocusedBorderColor = Color(0xFF475569),
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.LightGray
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ControlMethod.values().forEach { method ->
+                                val isSelected = controlMethod == method
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(32.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (isSelected) Color(0xFF0369A1) else Color(0xFF0F172A))
+                                    .border(1.dp, if (isSelected) Color(0xFF38BDF8) else Color(0xFF334155), RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        controlMethod = method
+                                        manager.controlMethod = method
+                                        addLog("TV Control Method: ${method.name}")
+                                    },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = method.name,
+                                        color = if (isSelected) Color.White else Color.LightGray,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+
+                        // Webhook URL Field
+                        if (controlMethod == ControlMethod.WEBHOOK || controlMethod == ControlMethod.BOTH) {
+                            OutlinedTextField(
+                                value = webhookUrl,
+                                onValueChange = {
+                                    webhookUrl = it
+                                    manager.webhookUrl = it
+                                },
+                                label = { Text("Smart TV Webhook URL (Hisense / Android TV)", fontSize = 10.sp) },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF0284C7),
+                                    unfocusedBorderColor = Color(0xFF475569),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.LightGray
+                                )
                             )
-                        )
+                        }
+
+                        // TV IR Preset Dropdown
+                        if (controlMethod == ControlMethod.IR || controlMethod == ControlMethod.BOTH) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                                    .clickable { tvDropdownExpanded = true }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = selectedTvSet.name,
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "TV Protocol: ${selectedTvSet.protocol} • ${selectedTvSet.carrierFrequency / 1000} kHz",
+                                            color = Color(0xFF38BDF8),
+                                            fontSize = 9.sp
+                                        )
+                                    }
+                                    Text(text = "▼", color = Color.LightGray, fontSize = 11.sp)
+                                }
+
+                                DropdownMenu(
+                                    expanded = tvDropdownExpanded,
+                                    onDismissRequest = { tvDropdownExpanded = false },
+                                    modifier = Modifier.background(Color(0xFF1E293B))
+                                ) {
+                                    tvCodeSets.forEachIndexed { index, codeSet ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(
+                                                        text = codeSet.name,
+                                                        color = if (index == selectedTvIndex) Color(0xFF38BDF8) else Color.White,
+                                                        fontWeight = if (index == selectedTvIndex) FontWeight.Bold else FontWeight.Normal,
+                                                        fontSize = 11.sp
+                                                    )
+                                                    Text(
+                                                        text = "${codeSet.protocol} • ${codeSet.carrierFrequency / 1000} kHz",
+                                                        color = Color.Gray,
+                                                        fontSize = 9.sp
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                selectedTvIndex = index
+                                                manager.selectedTvCodeSetIndex = index
+                                                tvDropdownExpanded = false
+                                                if (codeSet.prontoHex != null) {
+                                                    customTvProntoHex = codeSet.prontoHex
+                                                    manager.customProntoHex = codeSet.prontoHex
+                                                }
+                                                addLog("Selected TV Set: ${codeSet.name}")
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // TV Code Set Selector Card (Visible when IR or BOTH)
-            if (controlMethod == ControlMethod.IR || controlMethod == ControlMethod.BOTH) {
+            // Soundbar Configuration Section (Visible when SOUNDBAR_ONLY or BOTH)
+            if (targetDevice == TargetDevice.SOUNDBAR_ONLY || targetDevice == TargetDevice.BOTH) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "IR BRAND & CODE SET VERSION",
+                            text = "SOUNDBAR IR CONFIGURATION (TVIEW USB DONGLE)",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF94A3B8),
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
 
-                        // Dropdown Anchor
+                        // Soundbar Preset Dropdown
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
                                 .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
-                                .clickable { dropdownExpanded = true }
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .clickable { soundbarDropdownExpanded = true }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -288,69 +424,68 @@ fun IrSettingsScreen(
                             ) {
                                 Column {
                                     Text(
-                                        text = selectedCodeSet.name,
+                                        text = selectedSoundbarSet.name,
                                         color = Color.White,
-                                        fontSize = 13.sp,
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = "Protocol: ${selectedCodeSet.protocol} • ${selectedCodeSet.carrierFrequency / 1000} kHz",
+                                        text = "Soundbar Protocol: ${selectedSoundbarSet.protocol} • ${selectedSoundbarSet.carrierFrequency / 1000} kHz",
                                         color = Color(0xFF38BDF8),
-                                        fontSize = 10.sp
+                                        fontSize = 9.sp
                                     )
                                 }
-                                Text(text = "▼", color = Color.LightGray, fontSize = 12.sp)
+                                Text(text = "▼", color = Color.LightGray, fontSize = 11.sp)
                             }
 
                             DropdownMenu(
-                                expanded = dropdownExpanded,
-                                onDismissRequest = { dropdownExpanded = false },
+                                expanded = soundbarDropdownExpanded,
+                                onDismissRequest = { soundbarDropdownExpanded = false },
                                 modifier = Modifier.background(Color(0xFF1E293B))
                             ) {
-                                codeSets.forEachIndexed { index, codeSet ->
+                                soundbarCodeSets.forEachIndexed { index, codeSet ->
                                     DropdownMenuItem(
                                         text = {
                                             Column {
                                                 Text(
                                                     text = codeSet.name,
-                                                    color = if (index == selectedIndex) Color(0xFF38BDF8) else Color.White,
-                                                    fontWeight = if (index == selectedIndex) FontWeight.Bold else FontWeight.Normal,
-                                                    fontSize = 12.sp
+                                                    color = if (index == selectedSoundbarIndex) Color(0xFF38BDF8) else Color.White,
+                                                    fontWeight = if (index == selectedSoundbarIndex) FontWeight.Bold else FontWeight.Normal,
+                                                    fontSize = 11.sp
                                                 )
                                                 Text(
                                                     text = "${codeSet.protocol} • ${codeSet.carrierFrequency / 1000} kHz",
                                                     color = Color.Gray,
-                                                    fontSize = 10.sp
+                                                    fontSize = 9.sp
                                                 )
                                             }
                                         },
                                         onClick = {
-                                            selectedIndex = index
-                                            manager.selectedCodeSetIndex = index
-                                            dropdownExpanded = false
+                                            selectedSoundbarIndex = index
+                                            manager.selectedSoundbarCodeSetIndex = index
+                                            soundbarDropdownExpanded = false
                                             if (codeSet.prontoHex != null) {
-                                                customProntoHex = codeSet.prontoHex
-                                                manager.customProntoHex = codeSet.prontoHex
+                                                customSoundbarProntoHex = codeSet.prontoHex
+                                                manager.customSoundbarProntoHex = codeSet.prontoHex
                                             }
-                                            addLog("Selected code set: ${codeSet.name}")
+                                            addLog("Selected Soundbar Set: ${codeSet.name}")
                                         }
                                     )
                                 }
                             }
                         }
 
-                        // Custom Pronto Hex Editor (when PRONTO selected)
-                        if (selectedCodeSet.protocol == "PRONTO") {
-                            Spacer(modifier = Modifier.height(8.dp))
+                        // Custom Pronto Hex Editor for Soundbar
+                        if (selectedSoundbarSet.protocol == "PRONTO") {
                             OutlinedTextField(
-                                value = customProntoHex,
+                                value = customSoundbarProntoHex,
                                 onValueChange = {
-                                    customProntoHex = it
-                                    manager.customProntoHex = it
+                                    customSoundbarProntoHex = it
+                                    manager.customSoundbarProntoHex = it
                                 },
                                 label = { Text("Pronto Hex String (0000 006D ...)", fontSize = 10.sp) },
                                 modifier = Modifier.fillMaxWidth(),
-                                maxLines = 3,
+                                maxLines = 2,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = Color(0xFF0284C7),
                                     unfocusedBorderColor = Color(0xFF475569),
@@ -368,28 +503,27 @@ fun IrSettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "TESTER & PAIRING WIZARD",
+                            text = "COMMAND DISPATCH TESTER",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF94A3B8),
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Mode: ${controlMethod.name} • Set ${selectedIndex + 1}/${codeSets.size}",
+                            text = "Target: ${targetDevice.name}",
                             color = Color(0xFF38BDF8),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
 
-                    // Test Action Buttons
+                    // Primary Test Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -397,7 +531,7 @@ fun IrSettingsScreen(
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    addLog("Sending MUTE via ${controlMethod.name}...")
+                                    addLog("Sending MUTE (${targetDevice.name})...")
                                     val result = manager.sendMute()
                                     addLog("MUTE Result: ${result.message}")
                                 }
@@ -411,7 +545,7 @@ fun IrSettingsScreen(
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    addLog("Sending UNMUTE via ${controlMethod.name}...")
+                                    addLog("Sending UNMUTE (${targetDevice.name})...")
                                     val result = manager.sendUnmute()
                                     addLog("UNMUTE Result: ${result.message}")
                                 }
@@ -422,20 +556,58 @@ fun IrSettingsScreen(
                             Text("TEST UNMUTE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
 
+                        // Step Next Presets Icon Button
                         OutlinedButton(
                             onClick = {
-                                selectedIndex = (selectedIndex + 1) % codeSets.size
-                                manager.selectedCodeSetIndex = selectedIndex
-                                val nextSet = codeSets[selectedIndex]
-                                if (nextSet.prontoHex != null) {
-                                    customProntoHex = nextSet.prontoHex
-                                    manager.customProntoHex = nextSet.prontoHex
+                                if (targetDevice == TargetDevice.SOUNDBAR_ONLY) {
+                                    selectedSoundbarIndex = (selectedSoundbarIndex + 1) % soundbarCodeSets.size
+                                    manager.selectedSoundbarCodeSetIndex = selectedSoundbarIndex
+                                    val nextSet = soundbarCodeSets[selectedSoundbarIndex]
+                                    addLog("Stepped to Soundbar IR: ${nextSet.name}")
+                                } else {
+                                    selectedTvIndex = (selectedTvIndex + 1) % tvCodeSets.size
+                                    manager.selectedTvCodeSetIndex = selectedTvIndex
+                                    val nextSet = tvCodeSets[selectedTvIndex]
+                                    addLog("Stepped to TV IR: ${nextSet.name}")
                                 }
-                                addLog("Stepped to IR Set ${selectedIndex + 1}: ${nextSet.name}")
                             },
                             modifier = Modifier.height(44.dp)
                         ) {
                             StepNextIcon(tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                        }
+                    }
+
+                    // Individual Diagnostic Buttons (When Target is BOTH)
+                    if (targetDevice == TargetDevice.BOTH) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        addLog("Testing TV Mute individually...")
+                                        val res = manager.executeTvAction("MUTE")
+                                        addLog("TV Test: ${res.message}")
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(36.dp)
+                            ) {
+                                Text("TEST TV ONLY", fontSize = 10.sp, color = Color(0xFF38BDF8))
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        addLog("Testing Soundbar Mute individually...")
+                                        val res = manager.executeSoundbarAction("MUTE")
+                                        addLog("Soundbar Test: ${res.message}")
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(36.dp)
+                            ) {
+                                Text("TEST SOUNDBAR ONLY", fontSize = 10.sp, color = Color(0xFF38BDF8))
+                            }
                         }
                     }
                 }
@@ -461,7 +633,7 @@ fun IrSettingsScreen(
                 if (logs.isEmpty()) {
                     item {
                         Text(
-                            text = "Ready to test. Press TEST MUTE or TEST UNMUTE above.",
+                            text = "Ready. Plug in Tview USB-C dongle & test commands above.",
                             color = Color.Gray,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace

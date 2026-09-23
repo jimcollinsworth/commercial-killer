@@ -1,4 +1,4 @@
-// Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 package com.example.commercialkiller.data.action
 
 import android.content.Context
@@ -10,11 +10,13 @@ import java.net.URL
 
 /**
  * Controller managing hardware Infrared (IR) emitter transmission via ConsumerIrManager
- * and network Webhook dispatching to Hisense Android TV.
+ * or external Tview USB-C IR dongle, and network Webhook dispatching to Hisense Android TV.
  */
 class IrEmitterController(
     private val context: Context? = null
 ) {
+    val usbDongleController = UsbIrDongleController(context)
+
     private val irManager: ConsumerIrManager? = context?.let {
         try {
             it.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
@@ -24,9 +26,17 @@ class IrEmitterController(
     }
 
     /**
-     * Checks if the host Android device features a hardware IR blaster.
+     * Checks if the host Android device features any hardware IR capability
+     * (either internal ConsumerIrManager or external USB Tview dongle).
      */
     fun hasIrEmitter(): Boolean {
+        return hasInternalIr() || hasUsbDongle()
+    }
+
+    /**
+     * Checks if device has internal ConsumerIrManager blaster hardware.
+     */
+    fun hasInternalIr(): Boolean {
         return try {
             irManager?.hasIrEmitter() == true
         } catch (e: Exception) {
@@ -35,7 +45,24 @@ class IrEmitterController(
     }
 
     /**
-     * Transmits a TV code set for MUTE or UNMUTE.
+     * Checks if external USB-C Tview IR dongle is attached.
+     */
+    fun hasUsbDongle(): Boolean = usbDongleController.isDongleAttached()
+
+    /**
+     * Gets status of USB-C Tview IR dongle.
+     */
+    fun getUsbDongleStatus(): UsbDongleStatus = usbDongleController.getStatus()
+
+    /**
+     * Requests USB permission for the attached Tview dongle.
+     */
+    fun requestUsbPermission(onResult: ((Boolean) -> Unit)? = null) {
+        usbDongleController.requestPermission(onResult)
+    }
+
+    /**
+     * Transmits a TV or Soundbar code set for MUTE or UNMUTE.
      */
     fun transmitCodeSet(codeSet: TvCodeSet, isMute: Boolean = true): Boolean {
         return if (codeSet.protocol == "PRONTO" && !codeSet.prontoHex.isNullOrBlank()) {
@@ -48,7 +75,7 @@ class IrEmitterController(
     }
 
     /**
-     * Decodes a Pronto Hex string and transmits it via ConsumerIrManager.
+     * Decodes a Pronto Hex string and transmits it via internal IR or USB dongle.
      */
     fun transmitProntoHex(prontoHex: String): Boolean {
         val decodedResult = ProntoHexConverter.decode(prontoHex)
@@ -79,21 +106,28 @@ class IrEmitterController(
     }
 
     /**
-     * Transmits an arbitrary raw microsecond timing pattern via ConsumerIrManager.
+     * Transmits an arbitrary raw microsecond timing pattern via internal IR or USB dongle.
      */
     fun transmitRawPattern(carrierFrequency: Int, pattern: IntArray): Boolean {
-        val manager = irManager ?: return false
-        return try {
-            if (manager.hasIrEmitter()) {
-                manager.transmit(carrierFrequency, pattern)
-                true
-            } else {
-                false
+        // 1. Try internal IR if available
+        val manager = irManager
+        if (manager != null) {
+            try {
+                if (manager.hasIrEmitter()) {
+                    manager.transmit(carrierFrequency, pattern)
+                    return true
+                }
+            } catch (e: Exception) {
+                // continue to USB dongle
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
         }
+
+        // 2. Try external USB IR dongle if attached
+        if (usbDongleController.isDongleAttached()) {
+            return usbDongleController.transmitRawPattern(carrierFrequency, pattern)
+        }
+
+        return false
     }
 
     /**

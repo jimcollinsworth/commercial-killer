@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8. -->
+<!-- USB device filter for Tview / Tiqiaa / ElkSmart USB-C IR Transceiver dongles -->
+<resources>
+    <usb-device vendor-id="4292" product-id="33896" />
+    <usb-device vendor-id="1118" product-id="33896" />
+</resources>
