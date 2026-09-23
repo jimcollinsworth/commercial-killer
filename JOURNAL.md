@@ -602,7 +602,43 @@
   - Git CLI (`feature/adaptive-audio-lifecycle-refactor`)
 
 ---
+
+## 2026-09-23: Architectural Decision Record (ADR): Cross-Modal Audio-Visual Fingerprint Caching for Muted Unmuting
+
+> [!NOTE] User Instructions & Guidance:
+> - The video stream will definitely be used to return to the program and unmute audio.
+> - Another important concept is that the application can track the relationship between the Mel-spectrogram and the program video and cache that when muting for commercials.
+> - Then it has an easier time recognizing the video stream to return sound to.
+
+### Problem & Diagnosis
+- **The Acoustic Deafness Dilemma**: When ambient room microphone audio is used to detect commercials and dispatch an IR or Webhook `MUTE`, the TV/soundbar speakers go completely silent. Ambient microphone monitoring is rendered deaf to the remaining broadcast, unable to detect the return to program content acoustically.
+
+### Solution & Technical Architecture
+1. **Cross-Modal Co-Occurrence Caching**:
+   - While primary program content is active, the app continuously correlates the audio stream (Mel-spectrogram frequency distributions) with the video stream (camera feed of TV screen).
+   - Right before firing `MUTE`, the system snapshots a **Pre-Break Program Fingerprint**:
+     - **Station Bug / Watermark ROI**: Corner image crop containing the network logo (e.g., NBC peacock, ESPN, CBS eye).
+     - **Scene Color Gamut & Luminance Profile**: Low-dimensional color histogram characteristic of the show (e.g., sports field, studio lighting).
+     - **Shot Cut Rhythm**: Baseline shot change frequency (typically 4–8s per cut vs. 1s per cut in ads).
+2. **Video-Driven Unmute Trigger**:
+   - During the muted commercial pod, the microphone is dormant, but the camera continuously scans the TV screen.
+   - When the video feed correlates strongly with the cached pre-break program fingerprint (reappearance of the station bug, return to program color palette), the system immediately triggers `UNMUTE`.
+   - Once unmuted, room audio returns and the audio-visual tracking loop resynchronizes.
+3. **Governance & Documentation**:
+   - Documented complete architecture diagram, component breakdown, and 3-phase implementation roadmap in `ROADMAP.md`.
+   - Updated active enhancement backlog in `PLANNING.md`.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Documentation tools (`ROADMAP.md`, `PLANNING.md`, `JOURNAL.md`)
+  - Git CLI (`feature/adaptive-audio-lifecycle-refactor`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
 
 
 

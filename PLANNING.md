@@ -38,6 +38,7 @@
 - [x] Thread-safe atomic StateFlow updates (`_state.update`) eliminating read-modify-write races (v2.0)
 - [x] Host lifecycle awareness (`LifecycleResumeEffect`) auto-pausing synthesis and playback in background (v2.0)
 - [x] Android 17 (API 37) Adaptive UI: Two-Pane layout for tablets/foldables (`sw600dp+`) and bounded phone containers (v2.0)
+- [ ] Cross-Modal Audio-Visual Fingerprint Caching (Learn and snapshot pre-break program signature [Mel-spectrogram + camera frame palette & station bug] prior to muting, enabling high-confidence visual recognition of program return to trigger unmute)
 - [ ] Vision-Based Spectrogram Image Comparison & Evaluation (Convert Mel-spectrograms to 2D image tensors/bitmaps and evaluate transitions using an on-device vision/image model)
 - [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)
 - [ ] ADK for Kotlin 1.0 integration (deferred until later release)
