@@ -105,4 +105,76 @@ Transition from standard static dashboard layout to an immersive, game-like Head
    - Circular command wheel overlay for quick IR mute, unmute, and manual override triggers.
 
 ---
+
+## Technical Proposal & Research: Vision-Based Spectrogram Image Comparison & Evaluation
+
+### 1. Concept & Background
+Traditional acoustic shift detection compares numerical 1D energy vectors between adjacent frames using mathematical distance metrics (e.g. Euclidean distance, Cosine distance). While fast, 1D vectors lack global temporal structure and texture awareness.
+
+In audio signal processing, broadcast transitions (e.g., transition from quiet program dialogue to dynamic multi-harmonic commercial jingles) manifest as distinct **2D visual patterns** across the time-frequency domain:
+- **Speech / Dialogue**: Sparse horizontal formant stripes modulating at 2–4 Hz syllable cadence.
+- **Silence / Black Frame**: Dark horizontal bands with minimal energy.
+- **Commercial Breaks**: Dense, high-contrast vertical blocks across all frequency bands due to dynamic range compression and loudness boosting (+6 to +10 dB).
+
+By converting the Mel-spectrogram buffer into a standardized 2D image bitmap (e.g., $128 \times 128$ or $224 \times 224$ RGB image), we can leverage on-device **Computer Vision models and Visual Embedders** to evaluate transitions visually.
+
+---
+
+### 2. Spectrogram-to-Image Transformation Pipeline
+
+```
+[Audio PCM Stream]
+       │
+       ▼
+[40-Band Mel-Spectrogram Calculation (100ms per frame)]
+       │
+       ▼
+[Rolling Time Window Buffer (e.g., 30–60 frames = 3.0–6.0s)]
+       │
+       ▼
+[Log-Magnitude Energy Normalization & Colormapping]
+  • Log-scale dynamic range compression
+  • Colormap: Viridis / Magma / Greyscale
+       │
+       ▼
+[2D Bitmap / Tensor Generation (e.g., 224x224x3)]
+       │
+       ├───► [Approach 1: LiteRT Vision Embedder] ───► Cosine Similarity between Img(t) & Img(t-1)
+       ├───► [Approach 2: Dual-Input Siamese CNN] ───► Transition Probability Score
+       └───► [Approach 3: Local Gemini Nano Multimodal] ──► Semantic Boundary Evaluation
+```
+
+---
+
+### 3. Evaluated Vision Architectures
+
+#### Option A: Lightweight On-Device Vision Embedder (MediaPipe / LiteRT MobileNetV4)
+- **Mechanism**: Passes 2D spectrogram image through a pretrained visual embedding network to generate a 512-dimensional visual feature embedding vector $\vec{v}_t$.
+- **Comparison**: Computes Cosine Distance between consecutive embedding vectors:
+  $$D_{\text{visual}}(t, t-1) = 1 - \frac{\vec{v}_t \cdot \vec{v}_{t-1}}{\|\vec{v}_t\| \|\vec{v}_{t-1}\|}$$
+- **Performance**: $< 8\text{ ms}$ inference time on mobile GPU/NPU; low memory footprint.
+
+#### Option B: Siamese Spectrogram Comparator CNN
+- **Mechanism**: A dedicated two-branch convolutional network that accepts both spectrogram image patch $I_{t-1}$ (program baseline) and $I_t$ (candidate window), outputting a binary transition classification score $P(\text{commercial\_break})$.
+- **Advantage**: Specifically trained on time-frequency spectrogram textures to ignore random mic noise while detecting commercial mastering characteristics.
+
+#### Option C: Local Multimodal Vision LLM (Gemini Nano / AICore Image API)
+- **Mechanism**: Renders consecutive spectrogram tiles side-by-side and submits the image directly to on-device Gemini Nano with multimodal prompt:
+  *"Analyze these two consecutive audio spectrogram images. Has the broadcast transitioned from primary content into a commercial advertisement block?"*
+- **Advantage**: Full semantic explanation and high boundary precision; ideal as a second-stage confirmation filter.
+
+---
+
+### 4. Implementation Phasing & Research Steps
+
+1. **Phase 1 (Spectrogram Image Renderer)**:
+   - Build `SpectrogramBitmapRenderer.kt` in Kotlin to convert `List<FloatArray>` rolling history buffers into Android `Bitmap` with normalized color palettes.
+2. **Phase 2 (LiteRT Vision Embedder Integration)**:
+   - Integrate LiteRT Image Embedder task to extract 2D feature representations.
+   - Benchmark visual similarity distances against 1D matrix distance metrics across the `test_assets/` broadcast clips (`gunsmoke_broadcast_with_ad.mp3`, `frosted_flakes_1976_ad.mp4`).
+3. **Phase 3 (Workbench Visualizer & Action Trigger)**:
+   - Display the visual embedding distance curve in Compose UI.
+   - Wire vision model transition thresholding directly to `TvControlManager.sendMute()`.
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*

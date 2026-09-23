@@ -488,6 +488,38 @@
   - Git CLI (`git checkout -b feature/smooth-playback-fixed-classifier`)
 
 ---
+
+## 2026-09-22: Enhancement Backlog & Technical Research: Vision-Based Spectrogram Image Model Comparison
+
+> [!NOTE] User Instructions & Guidance:
+> - Add another enhancement to the to-do list: We want to change the comparison and evaluation mechanism for the Mel-spectrographs to be based on the image and using an image model to compare them.
+> - Mark this as an enhancement (do not start code work yet). Document the roadmap and do research on it first.
+
+### Problem & Diagnosis
+- The current significance detector compares 1D numerical frequency energy vectors between consecutive frames using mathematical distance metrics (e.g. Euclidean / MSE).
+- While computationally lightweight, 1D metrics lack spatial texture awareness and temporal structure. Broadcast transitions (dialogue $\rightarrow$ silence $\rightarrow$ compressed commercial audio) produce distinct 2D visual patterns (horizontal formant lines vs. dense vertical blocks) in the time-frequency spectrogram.
+
+### Technical Research & Evaluation
+1. **Spectrogram-to-Image Transformation**:
+   - Buffer $T$ consecutive Mel frames (30–60 frames = 3–6s) across 40 Mel bands.
+   - Dynamic range compression: $E_{\text{norm}} = \text{clamp}\left(\frac{\log(E + 10^{-6}) - \text{min}}{\text{max} - \text{min}}, 0.0, 1.0\right)$.
+   - Colormap conversion (Viridis, Magma, or Grayscale) to a $[1, 224, 224, 3]$ RGB tensor or Android `Bitmap`.
+2. **Vision Model Architectures**:
+   - **LiteRT / MediaPipe Vision Embedder (MobileNetV4)**: Extract 512-dim visual embeddings and calculate visual cosine distance ($< 8\text{ ms}$ on mobile NPU/GPU).
+   - **Siamese CNN Comparator**: Dual-input convolutional network accepting $I_{t-1}$ and $I_t$ to directly classify transition probability.
+   - **On-Device Multimodal Vision (Gemini Nano)**: Side-by-side visual tile submission with multimodal boundary verification prompt.
+3. **Governance & Backlog Synchronization**:
+   - Added backlog enhancement item to `PLANNING.md`.
+   - Documented detailed technical proposal, visual signature breakdowns, and implementation phases in `ROADMAP.md`.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Codebase documentation tools (`PLANNING.md`, `ROADMAP.md`, `JOURNAL.md`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
 
 

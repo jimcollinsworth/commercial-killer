@@ -29,9 +29,9 @@
 - [x] Lightweight AppIcons custom vector icons (non-wrapping 44×44dp touch targets)
 - [x] Hisense Android TV IP control & webhook runner (HTTP POST / REST integration)
 - [x] Comprehensive System Help & Details screen (`HelpScreen.kt` detailing signal processing, 40-band Mel calculation, IR signals, webhooks, and input modes)
-- [x] Real-time sound speaker playback for audio file analysis (`AudioTrack` 16-bit PCM output)
 - [x] Automated Mute / Unmute pipeline integration during real-time processing & commercial detection
 - [x] Unified `TvControlManager` with persistent SharedPreferences (Webhook, IR, Both)
+- [ ] Vision-Based Spectrogram Image Comparison & Evaluation (Convert Mel-spectrograms to 2D image tensors/bitmaps and evaluate transitions using an on-device vision/image model)
 - [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)
 - [ ] ADK for Kotlin 1.0 integration (deferred until later release)
 - [ ] MediaPipe & LiteRT-ML video model execution pipeline integration
