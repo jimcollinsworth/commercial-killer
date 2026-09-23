@@ -1,9 +1,12 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 package com.example.commercialkiller.ui.main
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -82,6 +85,15 @@ fun MainScreen(
         }
     }
 
+    // Microphone runtime permission launcher
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            engine.start(AudioSourceMode.MIC)
+        }
+    }
+
     // Auto-start simulated workbench on launch for immediate real-time visualization
     DisposableEffect(Unit) {
         engine.start(AudioSourceMode.SYNTH)
@@ -111,20 +123,35 @@ fun MainScreen(
                     if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
                 },
                 onSelectSource = { mode ->
-                    if (mode == AudioSourceMode.FILE) {
-                        if (state.sourceMode == AudioSourceMode.FILE || state.loadedFileName == null) {
-                            filePickerLauncher.launch(
-                                arrayOf(
-                                    "audio/*",
-                                    "application/ogg",
-                                    "video/mp4"
+                    when (mode) {
+                        AudioSourceMode.MIC -> {
+                            val hasPermission = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                            if (hasPermission) {
+                                engine.start(AudioSourceMode.MIC)
+                            } else {
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                        AudioSourceMode.FILE -> {
+                            if (state.sourceMode == AudioSourceMode.FILE || state.loadedFileName == null) {
+                                filePickerLauncher.launch(
+                                    arrayOf(
+                                        "audio/*",
+                                        "application/ogg",
+                                        "video/mp4"
+                                    )
                                 )
-                            )
-                        } else {
+                            } else {
+                                engine.start(mode)
+                            }
+                        }
+                        AudioSourceMode.SYNTH -> {
                             engine.start(mode)
                         }
-                    } else {
-                        engine.start(mode)
                     }
                 },
                 onOpenFilePicker = {
@@ -491,54 +518,62 @@ private fun FilePlaybackCard(
 
 @Composable
 private fun ParallelClassifierContent(scores: List<ClassifierScore>) {
-    if (scores.isEmpty()) {
-        Text(
-            text = "Classifying stream...",
-            color = Color.Gray,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace
-        )
-    } else {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            scores.forEach { item ->
-                val animatedProgress by animateFloatAsState(
-                    targetValue = item.score.coerceIn(0f, 1f),
-                    label = "classifierProgress"
+    val displayScores = remember(scores) {
+        val list = scores.take(3).toMutableList()
+        val defaultLabels = listOf("Dialogue / Speech", "Broadcast Content", "Background Noise")
+        var idx = 0
+        while (list.size < 3) {
+            val label = defaultLabels.getOrElse(idx++) { "Audio Stream" }
+            list.add(ClassifierScore(label, 0.0f))
+        }
+        list
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        displayScores.forEach { item ->
+            val animatedProgress by animateFloatAsState(
+                targetValue = item.score.coerceIn(0f, 1f),
+                label = "classifierProgress"
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.label,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    modifier = Modifier.width(140.dp)
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = item.label,
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.width(140.dp)
-                    )
-                    LinearProgressIndicator(
-                        progress = { animatedProgress },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = when {
-                            item.label.contains("Commercial", ignoreCase = true) -> Color(0xFFDC2626)
-                            item.label.contains("Silence", ignoreCase = true) -> Color(0xFFFBBF24)
-                            else -> Color(0xFF38BDF8)
-                        },
-                        trackColor = Color(0xFF0F172A),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "%.0f%%".format(item.score * 100f),
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.width(36.dp)
-                    )
-                }
+                LinearProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = when {
+                        item.label.contains("Commercial", ignoreCase = true) -> Color(0xFFDC2626)
+                        item.label.contains("Silence", ignoreCase = true) -> Color(0xFFFBBF24)
+                        else -> Color(0xFF38BDF8)
+                    },
+                    trackColor = Color(0xFF0F172A),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "%.0f%%".format(item.score * 100f),
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.width(36.dp)
+                )
             }
         }
     }

@@ -119,9 +119,10 @@ class AudioClassifierEngine(
                 audio.load(samples)
                 val results = classifier.classify(audio)
                 if (results.isNotEmpty() && results[0].categories.isNotEmpty()) {
-                    return@withContext results[0].categories.map {
+                    val items = results[0].categories.map {
                         ClassifierScore(label = it.label, score = it.score)
-                    }.take(4)
+                    }.take(3)
+                    return@withContext padToThree(items)
                 }
             } catch (e: Exception) {
                 logE("Error running TFLite audio classification", e)
@@ -136,10 +137,15 @@ class AudioClassifierEngine(
     /**
      * Acoustic feature classifier that computes Zero Crossing Rate (ZCR), RMS energy,
      * and high-frequency content to classify audio frames into broadcast categories.
+     * Always returns exactly 3 items to maintain stable, non-jumping UI layout.
      */
     fun classifyByAcousticFeatures(samples: FloatArray): List<ClassifierScore> {
         if (samples.isEmpty()) {
-            return listOf(ClassifierScore("Silence", 1.0f))
+            return listOf(
+                ClassifierScore("Silence", 1.0f),
+                ClassifierScore("Background Noise", 0.0f),
+                ClassifierScore("Broadcast Content", 0.0f)
+            )
         }
 
         // 1. RMS Energy
@@ -152,7 +158,8 @@ class AudioClassifierEngine(
         if (rms < 0.015f) {
             return listOf(
                 ClassifierScore("Silence / Transition Gap", 0.95f),
-                ClassifierScore("Background Noise", 0.05f)
+                ClassifierScore("Background Noise", 0.05f),
+                ClassifierScore("Broadcast Content", 0.00f)
             )
         }
 
@@ -180,7 +187,7 @@ class AudioClassifierEngine(
         val isHighLoudness = rms > 0.18f
         val isHighFrequencyBed = hfRatio > 1.2f
 
-        return if (isHighLoudness && isHighFrequencyBed) {
+        val rawList = if (isHighLoudness && isHighFrequencyBed) {
             listOf(
                 ClassifierScore("Commercial / Jingle", (0.75f + (rms * 0.2f)).coerceAtMost(0.98f)),
                 ClassifierScore("Music Bed", 0.65f),
@@ -199,6 +206,18 @@ class AudioClassifierEngine(
                 ClassifierScore("Speech", 0.35f)
             )
         }
+        return padToThree(rawList)
+    }
+
+    private fun padToThree(items: List<ClassifierScore>): List<ClassifierScore> {
+        val result = items.take(3).toMutableList()
+        val defaultLabels = listOf("Broadcast Content", "Background Noise", "Audio Stream")
+        var labelIdx = 0
+        while (result.size < 3) {
+            val label = defaultLabels.getOrElse(labelIdx++) { "Stream Item" }
+            result.add(ClassifierScore(label, 0.0f))
+        }
+        return result
     }
 
     fun getActiveModelName(): String = activeModelName
