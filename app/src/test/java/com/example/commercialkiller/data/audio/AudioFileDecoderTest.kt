@@ -48,4 +48,17 @@ class AudioFileDecoderTest {
             assertEquals(input[i], resampled[i], 0.0001f)
         }
     }
+
+    @Test
+    fun decodedAudio_supportsVideoProperty() {
+        val audio = DecodedAudio(
+            samples = floatArrayOf(0f),
+            sampleRate = 16000,
+            durationMs = 1000L,
+            fileName = "sample_video.mp4",
+            isVideo = true
+        )
+        assertTrue(audio.isVideo)
+        assertEquals("sample_video.mp4", audio.fileName)
+    }
 }

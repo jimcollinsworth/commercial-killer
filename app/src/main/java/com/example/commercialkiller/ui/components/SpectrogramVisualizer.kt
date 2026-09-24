@@ -82,10 +82,11 @@ fun WaveformOscilloscope(
 @Composable
 fun SpectrogramWaterfall(
     history: List<FloatArray>,
-    numMelBands: Int = 40,
+    numMelBands: Int = 80,
     modifier: Modifier = Modifier,
     backgroundColor: Color = Color(0xFF0A0E17)
 ) {
+    val effectiveBands = numMelBands
     Box(
         modifier = modifier
             .background(backgroundColor, RoundedCornerShape(8.dp))
@@ -97,13 +98,13 @@ fun SpectrogramWaterfall(
 
             val totalFrames = history.size
             val cellWidth = size.width / totalFrames.coerceAtLeast(1)
-            val cellHeight = size.height / numMelBands.coerceAtLeast(1)
+            val cellHeight = size.height / effectiveBands.coerceAtLeast(1)
 
             for (t in 0 until totalFrames) {
                 val frame = history[t]
                 val x = t * cellWidth
 
-                for (m in 0 until minOf(frame.size, numMelBands)) {
+                for (m in 0 until minOf(frame.size, effectiveBands)) {
                     val energy = frame[m].coerceIn(0f, 1f)
                     // Invert y so low frequencies are at bottom, high frequencies at top
                     val y = size.height - (m + 1) * cellHeight

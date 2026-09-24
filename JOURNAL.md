@@ -637,7 +637,147 @@
   - Git CLI (`feature/adaptive-audio-lifecycle-refactor`)
 
 ---
+
+## 2026-09-23: Governance Update: Enforced Strict CMD.exe Only Invariant (No PowerShell)
+
+> [!NOTE] User Instructions & Guidance:
+> - User explicitly instructed: "why wasn't the instruction followed, investigate all command interpretation find conflicting rules. i've stated no powershel many times" -> "yes add it".
+
+### Problem & Diagnosis
+- System tool declarations (`run_command`) hardcode `Shell: powershell`, and global environment policy rules (`<RULE[user_global]>`) contain PowerShell code examples (`$env:`, `Get-Command`).
+- `AGENTS.md` Section 6 previously contained ambiguous phrasing ("Verify Shell Capabilities") rather than an explicit, absolute prohibition of PowerShell.
+
+### Solution & Technical Implementation
+- Updated `AGENTS.md` Section 6 with an explicit **STRICT NO POWERSHELL RULE**:
+  - The agent must **NEVER** propose, generate, or execute PowerShell syntax (`$env:`, `Get-Command`, `Set-ExecutionPolicy`, `[Environment]`).
+  - ALL terminal commands, setup scripts, and environment instructions MUST strictly use standard Windows Command Prompt (`cmd.exe`) syntax (`set`, `setx`, `dir`, `copy`, `del`, `call`).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.6` (Gemini 3.6 Flash Medium)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Governance docs (`AGENTS.md`, `JOURNAL.md`)
+
+---
+
+## 2026-09-24: Release v2.1.00: Spectrogram Highlighting, Video Surface & UI Decluttering
+
+> [!NOTE] User Instructions & Guidance:
+> - Make a number of changes on the user interface in order to highlight the spectrograms and move optional data off the page.
+> - Show video on screen when a video file is being processed, not necessarily when it's only audio. In the case of a video: video file display on top, audio mel spectrogram underneath, all features and labeling underneath that.
+> - Move the spectrogram threshold intervals into a settings panel.
+> - Make the mel spectrogram three times as tall, or around 50% of the total screen, showing as many bands as possible.
+> - Classifier output: remove both classification confidence value and bar chart; show text only (green if >90%, yellow if <=90%, hidden if <10%).
+> - Completely remove titles: "Mel Spectrogram", "Parallel Audio Class", "Acoustic Feature Classifier".
+> - Make sync, mic, and file buttons quite a bit smaller, maybe even a dropdown or icons.
+
+### Problem & Diagnosis
+- **Vertical Clutter & Low Spectrogram Resolution**: The Mel spectrogram was previously restricted to 80dp height and 40 bands, limiting visual inspection of acoustic signatures. Permanent slider controls on the main screen consumed ~120dp. Titles and classifier progress bars consumed additional vertical space.
+- **Missing Video View**: MediaExtractor decoded audio tracks from MP4 video files, but no video display surface was rendered on screen.
+
+### Root Cause & Technical Analysis
+- The UI hierarchy placed all parameter sliders directly in the scroll layout rather than in a contextual settings panel.
+- The `SpectrogramWaterfall` was hardcoded to 40 bands and 80dp canvas height.
+- `ParallelClassifierCard` rendered horizontal `LinearProgressIndicator` widgets and percentage text for every class regardless of confidence.
+- `AudioFileDecoder` only extracted audio tracks without tracking video track presence or file URI in state.
+
+### Solution & Standard Procedure
+1. **Video Display on Top**:
+   - Updated `AudioFileDecoder` to detect video tracks via `MediaExtractor` and MIME inspection (`isVideo: Boolean`).
+   - Added `VideoPlayerCard` wrapping `VideoView` via `AndroidView`. Placed on top of the content area when a video file is active.
+   - Synchronized `VideoView` playback state with `AudioWorkbenchEngine` playback while setting `mp.setVolume(0f, 0f)` to prevent dual audio output with `AudioTrack`.
+   - Maintained compact audio-only playback bar when processing audio files.
+2. **Spectrogram 3x Height & 80-128 Bands**:
+   - Increased waterfall canvas height from 80dp to 240dp–280dp (3x tall, ~50% screen height).
+   - Upgraded `MelSpectrogramCalculator` to 80 frequency bands by default with dynamic band drawing in `SpectrogramWaterfall`.
+   - Added `setMelBands` method to `AudioWorkbenchEngine` supporting up to 128 bands.
+3. **Settings Panel Relocation**:
+   - Moved Significance Threshold (τ) and Analysis Interval sliders off the main screen into a `ModalBottomSheet` (`SpectrogramSettingsSheet`).
+   - Added Mel frequency resolution selector (40, 64, 80, 128 bands).
+   - Added `SlidersIcon` header action to open the settings sheet on demand.
+4. **Classifier Display Simplification**:
+   - Removed progress bar indicators and confidence percentage numbers.
+   - Filtered out all scores below 10% (`score >= 0.10f`).
+   - Rendered classification labels as colored text tags: Green (`#22C55E`) for confidence > 90%, Yellow (`#FBBF24`) for confidence <= 90%.
+5. **Title Elimination**:
+   - Completely removed titles "Mel Spectrogram", "Parallel Audio Class", and "Acoustic Feature Classifier".
+6. **Compact Source Selector**:
+   - Designed a 28dp pill container with custom vector icons (`SynthIcon`, `MicIcon`, `AudioFileIcon`) replacing previous 38dp buttons.
+7. **Automated Unit Tests**:
+   - Added unit test `computeMelEnergies_supportsHighBandResolution80` in `MelSpectrogramTest.kt`.
+   - Added `decodedAudio_supportsVideoProperty` in `AudioFileDecoderTest.kt`.
+   - Added `AudioWorkbenchEngineTest.kt` verifying state defaults, video flags, and classifier filter/color rules.
+   - Incremented version to `2.1.00` (`versionCode = 11`).
+
+### Token & LLM Resource Log
+- **Session ID**: `7ebd963b-c9ed-4dff-87ee-2c4de3ea6802`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\7ebd963b-c9ed-4dff-87ee-2c4de3ea6802\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Native filesystem tools (`write_to_file`, `replace_file_content`, `view_file`)
+  - Git branch tracking (`feature/spectrogram-video-ui-redesign`)
+
+---
+
+## 2026-09-24: Release v2.1.00.01: Spectrogram Scale, FlowRow Wrapping & Video Lifecycle Hardening
+
+> [!NOTE] User Instructions & Guidance:
+> - Rigorous review and hardening of the Spectrogram Highlighting, Video Surface & UI Decluttering implementation.
+> - Ensure video detection accurately identifies video containers and does not misclassify audio-only MP4/M4A containers.
+> - Ensure classifier labels wrap cleanly without horizontal truncation on narrow viewports.
+> - Ensure spectrogram scaling occupies ~50% of the screen height (380dp) when video is not active.
+> - Ensure VideoView lifecycle resources are released on exit and track URI re-binding on file changes.
+
+### Problem & Diagnosis
+- **Audio-Only MP4 False Positive**: `AudioFileDecoder` evaluated file extension `.mp4` with an OR condition, marking audio-only MP4 podcasts as videos and rendering an empty black video surface.
+- **Classifier Horizontal Truncation**: `ClassifierLabelsContent` placed badges inside a non-wrapping `Row`, causing badges to overflow the screen edge on narrow viewports.
+- **VideoView Lifecycle & State Sync**: `VideoPlayerCard` did not re-bind when the media URI changed, leaked native decoder resources on exit (`view.stopPlayback()` missing), and did not update frame seek positions while paused.
+- **Spectrogram Band Switching Latency**: `SpectrogramWaterfall` read frame size from the oldest history entry, delaying band resolution scaling by 30 frames (~3 seconds).
+- **Array Allocations in Recomposition Loop**: `AudioSourceMode.values()` allocated array instances on every 100ms UI recomposition.
+
+### Root Cause & Technical Analysis
+- `videoTrackIndex >= 0` from `MediaExtractor` is the single authoritative source of truth for video tracks; extension checking overrode container metadata.
+- `Row` in Compose does not support multi-line wrapping; `FlowRow` handles flexible line wrapping for dynamic chips.
+- Compose `AndroidView` requires `key(uri)` to recreate instances across URI switches and `onRelease` to trigger `stopPlayback()`.
+- `effectiveBands` must reference the user-selected `numMelBands` parameter directly.
+- In Kotlin 1.9+, `Enum.entries` provides pre-allocated lists avoiding GC allocation.
+
+### Solution & Standard Procedure
+1. **AudioFileDecoder Video Detection**:
+   - Removed filename extension fallbacks; `hasVideo = videoTrackIndex >= 0` ensures audio-only containers remain in audio playback mode.
+2. **Classifier FlowRow Layout**:
+   - Replaced `Row` with `FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp))`.
+   - Hidden completely when all confidence scores are < 10%.
+3. **VideoView Lifecycle & Frame Scrubbing**:
+   - Added `key(uri)` around `AndroidView` in `VideoPlayerCard`.
+   - Added `onRelease = { view -> view.stopPlayback() }`.
+   - Enabled timeline seeking when playback is paused.
+4. **Waterfall Dynamic Rescaling**:
+   - Set `effectiveBands = numMelBands` in `SpectrogramWaterfall` for immediate UI response.
+5. **Spectrogram Screen Height**:
+   - Set compact phone spectrogram height to 380dp (~50% screen height) when video is not shown, 240dp when video is shown, and 360dp in tablet mode.
+6. **GC & Touch Target Optimization**:
+   - Replaced `AudioSourceMode.values()` with `AudioSourceMode.entries`.
+   - Replaced header `IconButton` with `Box.size(38.dp).clip().clickable()` for exact touch boundaries.
+7. **Comprehensive Unit Tests**:
+   - Replaced trivial tests in `AudioWorkbenchEngineTest.kt` with actual engine method testing (`setMelBands` clamping, `setThreshold`, `setInterval`, `start` source mode switches).
+8. **Versioning**:
+   - Incremented project version to `2.1.00.01` (`versionCode = 11`) in `app/build.gradle.kts`.
+
+### Token & LLM Resource Log
+- **Session ID**: `7ebd963b-c9ed-4dff-87ee-2c4de3ea6802`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\7ebd963b-c9ed-4dff-87ee-2c4de3ea6802\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - Native filesystem tools (`replace_file_content`, `write_to_file`, `view_file`)
+  - Git branch tracking (`feature/spectrogram-video-ui-redesign`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
+
+
 
 
 
