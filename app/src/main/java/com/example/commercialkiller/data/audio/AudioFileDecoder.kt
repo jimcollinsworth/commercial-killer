@@ -16,7 +16,9 @@ data class DecodedAudio(
     val samples: FloatArray,
     val sampleRate: Int = 16000,
     val durationMs: Long,
-    val fileName: String
+    val fileName: String,
+    val isVideo: Boolean = false,
+    val uri: Uri? = null
 )
 
 /**
@@ -42,6 +44,10 @@ class AudioFileDecoder {
             if (audioTrackIndex < 0) {
                 throw IllegalArgumentException("No audio track found in media file: $fileName")
             }
+
+            val videoTrackIndex = findVideoTrack(extractor)
+            // A media file is only considered a video if an actual video track is detected in its container
+            val hasVideo = videoTrackIndex >= 0
 
             extractor.selectTrack(audioTrackIndex)
             val format = extractor.getTrackFormat(audioTrackIndex)
@@ -90,7 +96,9 @@ class AudioFileDecoder {
                 samples = normalizedSamples,
                 sampleRate = targetSampleRate,
                 durationMs = durationMs,
-                fileName = fileName
+                fileName = fileName,
+                isVideo = hasVideo,
+                uri = uri
             )
         } finally {
             extractor.release()
@@ -103,6 +111,17 @@ class AudioFileDecoder {
             val format = extractor.getTrackFormat(i)
             val mime = format.getString(MediaFormat.KEY_MIME)
             if (mime != null && mime.startsWith("audio/")) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    private fun findVideoTrack(extractor: MediaExtractor): Int {
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(MediaFormat.KEY_MIME)
+            if (mime != null && mime.startsWith("video/")) {
                 return i
             }
         }

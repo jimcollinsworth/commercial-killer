@@ -59,7 +59,10 @@ data class WorkbenchState(
     val loadedFileName: String? = null,
     val fileDurationMs: Long = 0L,
     val filePositionMs: Long = 0L,
-    val fileProgress: Float = 0f
+    val fileProgress: Float = 0f,
+    val isVideo: Boolean = false,
+    val mediaUri: Uri? = null,
+    val numMelBands: Int = 80
 ) {
     val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.MIC
 }
@@ -71,7 +74,7 @@ data class WorkbenchState(
 class AudioWorkbenchEngine(
     private val context: Context? = null
 ) {
-    private val calculator = MelSpectrogramCalculator()
+    private var calculator = MelSpectrogramCalculator(numMelBands = 80)
     private val comparator = SpectrogramComparator()
     private val classifier = AudioClassifierEngine(context)
     private val fileDecoder = AudioFileDecoder()
@@ -112,7 +115,8 @@ class AudioWorkbenchEngine(
                 sourceMode = sourceMode,
                 activeClassifierModel = classifier.getActiveModelName(),
                 tvControlMethod = tvControlManager.controlMethod.name,
-                isTvMuted = false
+                isTvMuted = false,
+                isVideo = if (sourceMode == AudioSourceMode.FILE) (loadedAudio?.isVideo ?: current.isVideo) else false
             )
         }
 
@@ -172,6 +176,12 @@ class AudioWorkbenchEngine(
         _state.update { it.copy(intervalMs = newIntervalMs) }
     }
 
+    fun setMelBands(bands: Int) {
+        val clamped = bands.coerceIn(20, 128)
+        calculator = MelSpectrogramCalculator(numMelBands = clamped)
+        _state.update { it.copy(numMelBands = clamped) }
+    }
+
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {
         return try {
             val decoded = fileDecoder.decode(appContext, uri)
@@ -185,7 +195,9 @@ class AudioWorkbenchEngine(
                     fileDurationMs = decoded.durationMs,
                     filePositionMs = 0L,
                     fileProgress = 0f,
-                    sourceMode = AudioSourceMode.FILE
+                    sourceMode = AudioSourceMode.FILE,
+                    isVideo = decoded.isVideo,
+                    mediaUri = uri
                 )
             }
 

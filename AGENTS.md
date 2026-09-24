@@ -79,11 +79,13 @@ Whenever technical changes, bug fixes, refactoring, or user corrections occur:
 ## 6. Command Line Standards & Terminal Runner Enforcement (Strict)
 
 > [!CAUTION]
-> **Strict Terminal Execution Requirements**:
-> - **Verify Shell Capabilities**: Never assume shell syntax (such as `$env:`, `&&`, or specific shell aliases) without verifying the user's operating system and active shell terminal environment (e.g., Command Prompt `cmd.exe`, PowerShell, Bash, or Zsh).
-> - **Explicit Runner Invocations**: Use clear, fully-qualified command line arguments to ensure reproducible execution across different local environments and CI runners.
-> - **Standard OS Commands**: Use standard OS commands for file manipulation (`dir` / `ls`, `copy` / `cp`, `del` / `rm`). Avoid obscure one-liners.
-> - If an operation cannot be executed cleanly in standard terminals, stop and clarify with the user before proceeding.
+> **Strict Terminal Execution & CMD.exe Invariants**:
+> - **STRICT NO POWERSHELL RULE**: The agent must **NEVER** propose, generate, or execute PowerShell syntax (such as `$env:`, `Get-Command`, `Set-ExecutionPolicy`, `[Environment]`, or PowerShell cmdlets).
+> - **CMD.exe Only**: ALL manual instructions, terminal commands, environment setup scripts, and automated runs MUST strictly use standard Windows Command Prompt (`cmd.exe`) syntax (`set`, `setx`, `dir`, `copy`, `del`, `call`).
+> - **Explicit Runner Invocations**: Use clear, fully-qualified command line arguments (`gradlew.bat`, `adb.exe`) to ensure reproducible execution across different local environments and CI runners.
+> - **Standard OS Commands**: Use standard OS commands for file manipulation (`dir`, `copy`, `del`). Avoid obscure one-liners or non-standard shell aliases.
+> - If an operation cannot be executed cleanly in standard `cmd.exe` terminals, stop and clarify with the user before proceeding.
+
 
 ---
 

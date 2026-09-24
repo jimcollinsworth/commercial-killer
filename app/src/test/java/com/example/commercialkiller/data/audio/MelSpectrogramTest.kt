@@ -47,4 +47,11 @@ class MelSpectrogramTest {
             assertEquals(0f, energy, 0.001f)
         }
     }
+
+    @Test
+    fun computeMelEnergies_supportsHighBandResolution80() {
+        val calc80 = MelSpectrogramCalculator(numMelBands = 80)
+        val energies = calc80.computeMelEnergies(FloatArray(512) { 0f })
+        assertEquals(80, energies.size)
+    }
 }
