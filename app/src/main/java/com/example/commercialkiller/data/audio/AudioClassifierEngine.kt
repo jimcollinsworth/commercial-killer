@@ -189,7 +189,7 @@ class AudioClassifierEngine(
         }
         val rms = sqrt(sumSquare / samples.size).toFloat()
 
-        if (rms < 0.015f) {
+        if (rms < 0.020f) {
             return listOf(
                 ClassifierScore("Silence / Transition Gap", 0.95f),
                 ClassifierScore("Background Noise", 0.05f),
@@ -232,10 +232,12 @@ class AudioClassifierEngine(
             if (subRms > maxSubRms) maxSubRms = subRms
         }
         val modRatio = (maxSubRms - minSubRms) / (rms + 1e-6f)
+        val maxPitchCorr = computePreEmphasizedPitchCorrelation(samples)
 
-        // Distinguish Non-Media (Vehicle Rumble / Steady Ambient) vs Commercial vs Speech vs Music:
+        // Distinguish Non-Media (Vehicle Rumble / Steady Ambient / Unpitched Room Noise) vs Commercial vs Speech vs Music:
         // Car cabin / engine rumble is concentrated below ~300 Hz (very low ZCR and low HF ratio).
         // Rain / HVAC / road hiss is broadband, unmodulated over short frames (low modRatio), and below ad loudness.
+        // Empty room ambient noise lacks periodic vocal harmonics (low pre-emphasized autocorrelation).
         val isHighLoudness = rms > 0.18f
         val isHighFrequencyBed = hfRatio > 1.2f
 
@@ -251,6 +253,12 @@ class AudioClassifierEngine(
                 ClassifierScore("Background Noise", 0.70f),
                 ClassifierScore("Non-Media Environment", 0.45f)
             )
+        } else if (maxPitchCorr < 0.30f && rms < 0.14f) {
+            listOf(
+                ClassifierScore("Ambient / Room Noise", 0.86f),
+                ClassifierScore("Background Noise", 0.72f),
+                ClassifierScore("Non-Media Environment", 0.50f)
+            )
         } else if (isHighLoudness && isHighFrequencyBed) {
             listOf(
                 ClassifierScore("Commercial / Jingle", (0.75f + (rms * 0.2f)).coerceAtMost(0.98f)),
@@ -259,7 +267,7 @@ class AudioClassifierEngine(
             )
         } else if (zcr in 0.04f..0.25f && !isHighLoudness) {
             listOf(
-                ClassifierScore("Dialogue / Speech", (0.70f + (1.0f - rms) * 0.2f).coerceAtMost(0.95f)),
+                ClassifierScore("Dialogue / Speech", (0.65f + (maxPitchCorr * 0.22f) + (rms * 0.20f)).coerceIn(0.65f, 0.95f)),
                 ClassifierScore("Broadcast Content", 0.55f),
                 ClassifierScore("Background Ambience", 0.20f)
             )
@@ -271,6 +279,50 @@ class AudioClassifierEngine(
             )
         }
         return padToThree(rawList)
+    }
+
+    /**
+     * Computes maximum normalized autocorrelation across human vocal pitch lags (80–500 Hz at 16 kHz)
+     * after first-order pre-emphasis (0.92f) and DC mean removal to suppress 1/f room noise.
+     */
+    private fun computePreEmphasizedPitchCorrelation(samples: FloatArray): Float {
+        val n = samples.size
+        if (n < 64) return 0f
+
+        var sum = 0.0
+        for (i in 0 until n) {
+            sum += samples[i]
+        }
+        val mean = (sum / n.toDouble()).toFloat()
+
+        val p = FloatArray(n)
+        for (i in 1 until n) {
+            p[i] = (samples[i] - mean) - 0.92f * (samples[i - 1] - mean)
+        }
+
+        val maxLag = minOf(200, n / 2)
+        var maxCorr = 0f
+        var lag = 32
+        while (lag <= maxLag) {
+            var dot = 0.0
+            var eA = 0.0
+            var eB = 0.0
+            val count = n - lag
+            for (i in 0 until count) {
+                val a = p[i].toDouble()
+                val b = p[i + lag].toDouble()
+                dot += a * b
+                eA += a * a
+                eB += b * b
+            }
+            val denom = sqrt(eA * eB)
+            if (denom > 1e-8) {
+                val corr = (dot / denom).toFloat()
+                if (corr > maxCorr) maxCorr = corr
+            }
+            lag += 2
+        }
+        return maxCorr.coerceIn(0f, 1f)
     }
 
     private fun padToThree(items: List<ClassifierScore>): List<ClassifierScore> {

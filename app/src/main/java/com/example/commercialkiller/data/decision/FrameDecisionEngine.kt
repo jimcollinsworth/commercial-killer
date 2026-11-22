@@ -300,7 +300,16 @@ class FrameDecisionEngine(
                 label.contains("static", ignoreCase = true) ||
                 label.contains("fan", ignoreCase = true) ||
                 label.contains("hiss", ignoreCase = true) ||
-                label.contains("background noise", ignoreCase = true)
+                label.contains("background noise", ignoreCase = true) ||
+                label.contains("room", ignoreCase = true) ||
+                label.contains("air conditioning", ignoreCase = true) ||
+                label.contains("hum", ignoreCase = true) ||
+                label.contains("buzz", ignoreCase = true) ||
+                label.contains("environmental", ignoreCase = true) ||
+                label.contains("pink", ignoreCase = true) ||
+                label.contains("white", ignoreCase = true) ||
+                label.contains("motor", ignoreCase = true) ||
+                label.contains("idle", ignoreCase = true)
             ) {
                 if (score > maxNonMediaTag) maxNonMediaTag = score
             }
@@ -343,11 +352,11 @@ class FrameDecisionEngine(
         }
 
         val meanEnergy = (totalEnergy / bandCount.toDouble()).toFloat()
-        if (meanEnergy < 0.04f || maxSilenceTag >= 0.70f) {
+        if (meanEnergy < 0.08f || maxSilenceTag >= 0.70f) {
             lastMediaScore = if (maxSilenceTag >= 0.70f) {
                 (1f - maxSilenceTag).coerceIn(0f, 0.20f)
             } else {
-                (meanEnergy / 0.04f * 0.25f).coerceIn(0f, 0.25f)
+                (meanEnergy / 0.08f * 0.25f).coerceIn(0f, 0.25f)
             }
             lastIsMedia = false
             lastMediaEnvironment = MediaEnvironment.SILENCE

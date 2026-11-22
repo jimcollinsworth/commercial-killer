@@ -1,6 +1,6 @@
 # Commercial Killer — Audio/Video AI Workbench
 
-An on-device experimentation workbench and real-time processing engine for Android (v2.3). Commercial Killer ingests live camera/microphone streams or local files, computes real-time Mel-spectrograms (40–128 bands), executes parallel MediaPipe / heuristic audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to distinguish broadcast TV/radio media from silence/ambient environments (`is_media`), detect commercial breaks (`is_commercial`), track scene continuity (`is_same_scene`), and trigger TV muting with zero cloud dependencies.
+An on-device experimentation workbench and real-time processing engine for Android (v2.3.01). Commercial Killer ingests live camera/microphone streams or local files, computes real-time Mel-spectrograms (40–128 bands), executes parallel MediaPipe / heuristic audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to distinguish broadcast TV/radio media from silence/ambient environments (`is_media`), detect commercial breaks (`is_commercial`), track scene continuity (`is_same_scene`), and trigger TV muting with zero cloud dependencies.
 
 ## Core Features & Vision
 
@@ -22,7 +22,7 @@ An on-device experimentation workbench and real-time processing engine for Andro
 - **Real-Time Workbench Dashboard**:
   - Synchronized top video display when processing video files
   - High-resolution graphical Mel-spectrogram waterfall / heatmap
-  - `FrameDecisionBar` HUD badges (`MEDIA`/`NO MEDIA: SILENCE`/`NO MEDIA: AMBIENT`, `COMMERCIAL`/`PROGRAM`/`HOLD (NON-MEDIA)`, `SAME SCENE`/`SCENE CUT`, shot duration, and cuts/min)
+  - Fixed-height HUD layout (`ShiftStatusBanner` 22dp, `FrameDecisionBar` 48dp with single-line `MEDIA`/`NO MEDIA: SILENCE`/`NO MEDIA: AMBIENT`, `COMMERCIAL`/`PROGRAM`/`HOLD (NO MEDIA)`, `SAME`/`CUT` badges, 3-slot `ClassifierLabelsContent` 24dp, `DistanceMeterCard` 34dp, and `EventConsoleCard` 110dp)
   - Live classifier tag display and execution log console
 
 ## Architecture & Directory Layout
@@ -30,9 +30,9 @@ An on-device experimentation workbench and real-time processing engine for Andro
 - `app/src/main/java/com/example/commercialkiller/`
   - `MainActivity.kt`: Entry activity with edge-to-edge UI scaffold (`edge-to-edge`).
   - `Navigation.kt` & `NavigationKeys.kt`: Navigation graph and scene transitions.
-  - `data/audio/AudioWorkbenchEngine.kt`: Core engine managing audio pipelines (SYNTH, MIC, FILE), 100 ms inspection loops, and automated muting triggers.
+  - `data/audio/AudioWorkbenchEngine.kt`: Core engine managing audio pipelines (`SYNTH`, `MIC`, `FILE`), `100 ms` inspection loops (including `MIC`/`UNPROCESSED` live priority and `intervalMs` throttling), and automated muting triggers.
   - `data/audio/AudioFileDecoder.kt`: Multi-format audio/video file decoder (WAV, MP3, AAC, M4A, FLAC, OGG, OPUS, MP4) and 16 kHz mono resampler.
-  - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite.
+  - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite, plus acoustic fallback with pre-emphasized pitch-correlation room/ambient noise rejection (`maxPitchCorr < 0.30f && rms < 0.14f`).
   - `data/audio/MelSpectrogramCalculator.kt`: Configurable 40–128 band Mel-spectrogram calculation (default 80) using Cooley-Tukey FFT.
   - `data/audio/SpectrogramComparator.kt`: Frame-to-frame matrix distance comparator with configurable thresholding.
   - `data/decision/FrameDecisionEngine.kt`: Non-autoregressive per-frame decision model evaluating `is_media` (`MediaEnvironment`), `is_commercial`, `is_same_scene` cosine similarity, shot duration, rolling cut cadence, and `MUTE`/`UNMUTE`/`HOLD` gating.

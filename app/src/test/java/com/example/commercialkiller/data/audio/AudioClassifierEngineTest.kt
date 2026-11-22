@@ -94,4 +94,36 @@ class AudioClassifierEngineTest {
             topLabel.contains("Ambient") || topLabel.contains("Noise") || topLabel.contains("Rain")
         )
     }
+
+    @Test
+    fun `unpitched empty room mic noise classifies as Ambient Room Noise rather than Speech`() {
+        val rng = java.util.Random(42L)
+        var pink = 0.0
+        val raw = FloatArray(512) {
+            val white = rng.nextDouble() * 2.0 - 1.0
+            pink = 0.72 * pink + 0.28 * white
+            pink.toFloat()
+        }
+        // Normalize RMS to ~0.045 (typical empty room mic floor above silence threshold)
+        var sumSq = 0.0
+        for (v in raw) sumSq += v * v
+        val rms = kotlin.math.sqrt(sumSq / raw.size).toFloat().coerceAtLeast(1e-6f)
+        val roomSamples = FloatArray(raw.size) { i -> raw[i] * (0.045f / rms) }
+
+        val scores = classifier.classifyByAcousticFeatures(roomSamples)
+        assertTrue(scores.isNotEmpty())
+        assertEquals("Ambient / Room Noise", scores[0].label)
+    }
+
+    @Test
+    fun `quiet empty room thermal floor under 0_020 RMS classifies as Silence`() {
+        val rng = java.util.Random(7L)
+        val quietRoom = FloatArray(512) {
+            ((rng.nextFloat() * 2f - 1f) * 0.030f) // uniform [-0.03, 0.03] -> RMS ~ 0.0173 < 0.020
+        }
+
+        val scores = classifier.classifyByAcousticFeatures(quietRoom)
+        assertTrue(scores.isNotEmpty())
+        assertEquals("Silence / Transition Gap", scores[0].label)
+    }
 }

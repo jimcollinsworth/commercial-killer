@@ -437,4 +437,38 @@ class FrameDecisionEngineTest {
         assertTrue(postReset.isMedia)
         assertEquals(TvActionDecision.HOLD, postReset.recommendedAction)
     }
+
+    @Test
+    fun `low energy mic floor and room hum tags gate to non-media HOLD`() {
+        val engine = FrameDecisionEngine()
+
+        // Empty-room mic Mel energy below 0.08f floor gates to SILENCE + HOLD even without Silence tag
+        val lowMicFloor = FloatArray(80) { 0.06f }
+        val floorDecision = engine.evaluateFrame(
+            melEnergies = lowMicFloor,
+            classifierTags = listOf(ClassifierScore("Ambient / Room Noise", 0.60f)),
+            shiftDistance = 0.01f,
+            timestampMs = 100L
+        )
+        assertFalse(floorDecision.isMedia)
+        assertEquals(MediaEnvironment.SILENCE, floorDecision.mediaEnvironment)
+        assertFalse(floorDecision.isCommercial)
+        assertEquals(TvActionDecision.HOLD, floorDecision.recommendedAction)
+
+        // Expanded non-media ambient keywords ("Room", "Hum", "Air Conditioning") suppress media gate
+        val hvacVector = FloatArray(80) { 0.14f }
+        val hvacDecision = engine.evaluateFrame(
+            melEnergies = hvacVector,
+            classifierTags = listOf(
+                ClassifierScore("Air Conditioning Hum", 0.85f),
+                ClassifierScore("Room Noise", 0.72f)
+            ),
+            shiftDistance = 0.01f,
+            timestampMs = 200L
+        )
+        assertFalse(hvacDecision.isMedia)
+        assertEquals(MediaEnvironment.AMBIENT_NOISE, hvacDecision.mediaEnvironment)
+        assertFalse(hvacDecision.isCommercial)
+        assertEquals(TvActionDecision.HOLD, hvacDecision.recommendedAction)
+    }
 }

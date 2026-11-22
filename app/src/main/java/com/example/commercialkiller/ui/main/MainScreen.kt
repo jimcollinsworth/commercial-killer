@@ -15,8 +15,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +60,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -119,9 +118,11 @@ fun MainScreen(
         }
     }
 
-    // Composition Lifecycle: Initialize synthesis on launch, stop when screen is disposed
+    // Composition Lifecycle: Initialize synthesis on launch unless a media file intent already loaded FILE mode
     DisposableEffect(Unit) {
-        engine.start(AudioSourceMode.SYNTH)
+        if (engine.state.value.sourceMode == AudioSourceMode.SYNTH && !engine.state.value.isRunning) {
+            engine.start(AudioSourceMode.SYNTH)
+        }
         onDispose {
             engine.stop()
         }
@@ -171,8 +172,8 @@ fun MainScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // Left Pane: Source Mode, Video/File Display, Spectrogram
                     Column(
@@ -180,7 +181,7 @@ fun MainScreen(
                             .weight(1f)
                             .fillMaxHeight()
                             .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         WorkbenchHeader(
                             isRunning = state.isRunning,
@@ -220,17 +221,19 @@ fun MainScreen(
                             )
                         }
 
-                        if (state.isEventTriggered) {
-                            AlertBanner(currentDistance = state.currentDistance, threshold = state.threshold)
-                        }
+                        ShiftStatusBanner(
+                            isTriggered = state.isEventTriggered,
+                            currentDistance = state.currentDistance,
+                            threshold = state.threshold
+                        )
 
-                        // 2. Audio Mel Spectrogram underneath (3x as tall, ~50% of view)
+                        // 2. Audio Mel Spectrogram underneath
                         SpectrogramWaterfallCard(
                             history = state.spectrogramHistory,
                             numMelBands = state.numMelBands,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(360.dp)
+                                .height(340.dp)
                         )
 
                         FrameDecisionBar(
@@ -244,14 +247,15 @@ fun MainScreen(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         ClassifierLabelsContent(scores = state.classifierScores)
 
                         DistanceMeterCard(
                             distance = state.currentDistance,
                             threshold = state.threshold,
-                            isTriggered = state.isEventTriggered
+                            isTriggered = state.isEventTriggered,
+                            modifier = Modifier.fillMaxWidth()
                         )
 
                         EventConsoleCard(
@@ -261,28 +265,18 @@ fun MainScreen(
                     }
                 }
             } else {
-                // Compact / Phone Single-Pane with Bounded Width (max 640dp) and IME safety
-                val phoneColumnModifier = if (isShortWindow) {
-                    Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 640.dp)
-                        .fillMaxHeight()
-                        .padding(12.dp)
-                        .verticalScroll(rememberScrollState())
-                        .imePadding()
-                } else {
-                    Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 640.dp)
-                        .fillMaxHeight()
-                        .padding(12.dp)
-                        .verticalScroll(rememberScrollState())
-                        .imePadding()
-                }
+                // Compact / Phone Single-Pane with Bounded Width (max 640dp) and fixed section heights
+                val phoneColumnModifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 640.dp)
+                    .fillMaxHeight()
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
 
                 Column(
                     modifier = phoneColumnModifier,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     WorkbenchHeader(
                         isRunning = state.isRunning,
@@ -322,17 +316,19 @@ fun MainScreen(
                         )
                     }
 
-                    if (state.isEventTriggered) {
-                        AlertBanner(currentDistance = state.currentDistance, threshold = state.threshold)
-                    }
+                    ShiftStatusBanner(
+                        isTriggered = state.isEventTriggered,
+                        currentDistance = state.currentDistance,
+                        threshold = state.threshold
+                    )
 
-                    // 2. Audio Mel Spectrogram underneath (3x as tall, ~50% total screen)
+                    // 2. Audio Mel Spectrogram underneath
                     val spectrogramHeight = if (state.sourceMode == AudioSourceMode.FILE && state.isVideo) {
-                        240.dp
+                        215.dp
                     } else if (isShortWindow) {
-                        220.dp
+                        190.dp
                     } else {
-                        380.dp
+                        310.dp
                     }
 
                     SpectrogramWaterfallCard(
@@ -354,14 +350,15 @@ fun MainScreen(
                     DistanceMeterCard(
                         distance = state.currentDistance,
                         threshold = state.threshold,
-                        isTriggered = state.isEventTriggered
+                        isTriggered = state.isEventTriggered,
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     EventConsoleCard(
                         events = state.eventLogs,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(130.dp)
+                            .height(110.dp)
                     )
                 }
             }
@@ -418,20 +415,41 @@ private fun handleSelectSource(
 }
 
 @Composable
-private fun AlertBanner(currentDistance: Float, threshold: Float) {
+private fun ShiftStatusBanner(
+    isTriggered: Boolean,
+    currentDistance: Float,
+    threshold: Float
+) {
+    val bgColor = if (isTriggered) Color(0xFFDC2626) else Color(0xFF1E293B)
+    val borderMod = if (isTriggered) {
+        Modifier
+    } else {
+        Modifier.border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
+    }
+    val statusText = if (isTriggered) {
+        "SHIFT DETECTED  Δ=%.4f > %.2f".format(currentDistance, threshold)
+    } else {
+        "STEADY SIGNAL   Δ=%.4f / τ=%.2f".format(currentDistance, threshold)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFDC2626), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .height(22.dp)
+            .background(bgColor, RoundedCornerShape(6.dp))
+            .then(borderMod)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.CenterStart
     ) {
         Text(
-            text = "⚡ COMMERCIAL SHIFT DETECTED! (Δ = %.4f > %.2f)".format(
-                currentDistance, threshold
-            ),
-            color = Color.White,
+            text = statusText,
+            color = if (isTriggered) Color.White else Color(0xFF94A3B8),
             fontWeight = FontWeight.Bold,
-            fontSize = 12.sp
+            fontSize = 10.sp,
+            lineHeight = 12.sp,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -444,9 +462,9 @@ private fun SpectrogramWaterfallCard(
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(10.dp)
     ) {
-        Box(modifier = Modifier.padding(6.dp)) {
+        Box(modifier = Modifier.padding(4.dp)) {
             SpectrogramWaterfall(
                 history = history,
                 numMelBands = numMelBands,
@@ -456,10 +474,9 @@ private fun SpectrogramWaterfallCard(
     }
 }
 
-private val DecisionBarShape = RoundedCornerShape(10.dp)
-private val DecisionBadgeShape = RoundedCornerShape(6.dp)
+private val DecisionBarShape = RoundedCornerShape(8.dp)
+private val DecisionBadgeShape = RoundedCornerShape(4.dp)
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FrameDecisionBar(
     decision: FrameDecision,
@@ -471,10 +488,9 @@ private fun FrameDecisionBar(
         else -> Color(0xFF64748B)
     }
     val mediaText = when {
-        decision.isMedia -> "MEDIA (%.0f%%)".format(decision.mediaScore * 100f)
-        decision.mediaEnvironment == MediaEnvironment.SILENCE ->
-            "NO MEDIA: SILENCE (%.0f%%)".format(decision.mediaScore * 100f)
-        else -> "NO MEDIA: AMBIENT (%.0f%%)".format(decision.mediaScore * 100f)
+        decision.isMedia -> "MEDIA %.0f%%".format(decision.mediaScore * 100f)
+        decision.mediaEnvironment == MediaEnvironment.SILENCE -> "NO MEDIA: SILENCE"
+        else -> "NO MEDIA: AMBIENT"
     }
 
     val commercialBg = when {
@@ -483,88 +499,129 @@ private fun FrameDecisionBar(
         else -> Color(0xFF16A34A)
     }
     val commercialText = when {
-        !decision.isMedia -> "HOLD (NON-MEDIA)"
-        decision.isCommercial -> "COMMERCIAL (%.0f%%)".format(decision.commercialScore * 100f)
-        else -> "PROGRAM (%.0f%%)".format((1f - decision.commercialScore) * 100f)
+        !decision.isMedia -> "HOLD (NO MEDIA)"
+        decision.isCommercial -> "COMMERCIAL %.0f%%".format(decision.commercialScore * 100f)
+        else -> "PROGRAM %.0f%%".format((1f - decision.commercialScore) * 100f)
     }
 
     val sceneBg = if (decision.isSameScene) Color(0xFF0284C7) else Color(0xFFD97706)
     val sceneText = if (decision.isSameScene) {
-        "SAME SCENE (%.2f)".format(decision.sceneSimilarity)
+        "SAME %.2f".format(decision.sceneSimilarity)
     } else {
-        "SCENE CUT (%.2f)".format(decision.sceneSimilarity)
+        "CUT %.2f".format(decision.sceneSimilarity)
     }
 
-    val telemetryText = "Shot: %.1fs | %.0f cuts/min".format(
-        decision.shotDurationMs / 1000f,
-        decision.cutCadencePerMin
+    val leftTelemetry = "Media: %.0f%% | Shot: %.1fs".format(
+        decision.mediaScore * 100f,
+        decision.shotDurationMs / 1000f
     )
+    val rightTelemetry = "%.0f cuts/min".format(decision.cutCadencePerMin)
 
     Surface(
-        modifier = modifier,
+        modifier = modifier.height(48.dp),
         color = Color(0xFF1E293B),
         shape = DecisionBarShape
     ) {
-        FlowRow(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .fillMaxSize()
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .align(Alignment.CenterVertically)
-                    .background(mediaBg, DecisionBadgeShape)
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .fillMaxWidth()
+                    .height(20.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = mediaText,
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
+                Box(
+                    modifier = Modifier
+                        .weight(1.25f)
+                        .fillMaxHeight()
+                        .background(mediaBg, DecisionBadgeShape)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mediaText,
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1.05f)
+                        .fillMaxHeight()
+                        .background(commercialBg, DecisionBadgeShape)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = commercialText,
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .fillMaxHeight()
+                        .background(sceneBg, DecisionBadgeShape)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = sceneText,
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
-            Box(
+            Row(
                 modifier = Modifier
-                    .align(Alignment.CenterVertically)
-                    .background(commercialBg, DecisionBadgeShape)
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .fillMaxWidth()
+                    .height(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = commercialText,
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    text = leftTelemetry,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 9.5.sp,
+                    lineHeight = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    softWrap = false
                 )
-            }
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterVertically)
-                    .background(sceneBg, DecisionBadgeShape)
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
                 Text(
-                    text = sceneText,
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    text = rightTelemetry,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 9.5.sp,
+                    lineHeight = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
-
-            Text(
-                text = telemetryText,
-                color = Color(0xFF94A3B8),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 1,
-                modifier = Modifier.align(Alignment.CenterVertically)
-            )
         }
     }
 }
@@ -573,13 +630,20 @@ private fun FrameDecisionBar(
 private fun DistanceMeterCard(
     distance: Float,
     threshold: Float,
-    isTriggered: Boolean
+    isTriggered: Boolean,
+    modifier: Modifier = Modifier
 ) {
     Card(
+        modifier = modifier.height(34.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(8.dp)
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+            contentAlignment = Alignment.Center
+        ) {
             DistanceMeter(
                 distance = distance,
                 threshold = threshold,
@@ -591,26 +655,39 @@ private fun DistanceMeterCard(
 }
 
 /**
- * Output of the classifier:
- * Shows text of classifications without confidence values or bar charts.
- * Uses color green if confidence > 90%, yellow if confidence <= 90%.
- * Classifications below 10% are not shown at all.
+ * Fixed-height 3-slot classifier strip:
+ * Green for > 90%, yellow for <= 90%; scores below 10% are filtered out.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ClassifierLabelsContent(scores: List<ClassifierScore>) {
     val activeScores = remember(scores) {
-        scores.filter { it.score >= 0.10f }
+        scores.filter { it.score >= 0.10f }.take(3)
     }
 
-    if (activeScores.isNotEmpty()) {
-        FlowRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(24.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (activeScores.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF1E293B), RoundedCornerShape(4.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No active audio tags",
+                    color = Color(0xFF64748B),
+                    fontSize = 9.5.sp,
+                    lineHeight = 11.sp,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        } else {
             activeScores.forEach { item ->
                 val textColor = if (item.score > 0.90f) {
                     Color(0xFF22C55E) // Green for > 90%
@@ -620,15 +697,22 @@ private fun ClassifierLabelsContent(scores: List<ClassifierScore>) {
 
                 Box(
                     modifier = Modifier
-                        .background(textColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-                        .border(1.dp, textColor.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(textColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .border(1.dp, textColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = item.label,
                         color = textColor,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = 9.5.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -644,46 +728,61 @@ private fun EventConsoleCard(
     Column(modifier = modifier) {
         Text(
             text = "REAL-TIME EVENT CONSOLE",
-            style = MaterialTheme.typography.labelSmall,
+            fontSize = 9.5.sp,
+            lineHeight = 11.sp,
             color = Color(0xFF94A3B8),
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(2.dp))
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f, fill = false)
+                .weight(1f, fill = true)
                 .background(Color(0xFF0A0F1D), RoundedCornerShape(8.dp))
                 .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                .padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (events.isEmpty()) {
                 item {
                     Text(
                         text = "Awaiting acoustic shift events...",
                         color = Color.Gray,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
                     )
                 }
             } else {
                 items(events) { event ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = "[${event.timestamp}] ${event.description}",
                             color = Color(0xFF34D399),
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
+                            fontSize = 9.5.sp,
+                            lineHeight = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 6.dp)
                         )
                         Text(
                             text = "Δ=%.3f".format(event.distance),
                             color = Color(0xFFFBBF24),
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
+                            fontSize = 9.5.sp,
+                            lineHeight = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -712,9 +811,11 @@ private fun WorkbenchHeader(
             Column {
                 Text(
                     text = "COMMERCIAL KILLER",
-                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = 14.sp,
+                    lineHeight = 16.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color.White,
+                    maxLines = 1
                 )
                 Box(
                     modifier = Modifier
@@ -722,13 +823,15 @@ private fun WorkbenchHeader(
                             if (isTvMuted) Color(0xFFDC2626) else Color(0xFF1E293B),
                             RoundedCornerShape(4.dp)
                         )
-                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = if (isTvMuted) "TV MUTED [$tvControlMethod]" else "TV ACTIVE [$tvControlMethod]",
                         color = if (isTvMuted) Color.White else Color(0xFF38BDF8),
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = 8.5.sp,
+                        lineHeight = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
                     )
                 }
             }
@@ -739,8 +842,8 @@ private fun WorkbenchHeader(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(7.dp))
                         .background(Color(0xFF334155))
                         .clickable(onClick = onOpenSpectrogramSettings),
                     contentAlignment = Alignment.Center
@@ -750,8 +853,8 @@ private fun WorkbenchHeader(
 
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(7.dp))
                         .background(Color(0xFF0284C7))
                         .clickable { onItemClick(com.example.commercialkiller.IrSettings) },
                     contentAlignment = Alignment.Center
@@ -761,8 +864,8 @@ private fun WorkbenchHeader(
 
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(7.dp))
                         .background(Color(0xFF334155))
                         .clickable { onItemClick(com.example.commercialkiller.Help) },
                     contentAlignment = Alignment.Center
@@ -772,8 +875,8 @@ private fun WorkbenchHeader(
 
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(7.dp))
                         .background(
                             if (isRunning) Color(0xFFDC2626) else Color(0xFF059669)
                         )
@@ -789,7 +892,7 @@ private fun WorkbenchHeader(
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(3.dp))
 
         // Compact Source Mode Selector (SYNTH, MIC, FILE) with icons
         Row(
@@ -799,41 +902,43 @@ private fun WorkbenchHeader(
         ) {
             Row(
                 modifier = Modifier
-                    .background(Color(0xFF1E293B), RoundedCornerShape(16.dp))
-                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(16.dp))
+                    .background(Color(0xFF1E293B), RoundedCornerShape(14.dp))
+                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
                     .padding(2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 AudioSourceMode.entries.forEach { mode ->
                     val isSelected = sourceMode == mode
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(if (isSelected) Color(0xFF0284C7) else Color.Transparent)
                             .clickable { onSelectSource(mode) }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         when (mode) {
                             AudioSourceMode.SYNTH -> SynthIcon(
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier.size(12.dp),
                                 tint = if (isSelected) Color.White else Color(0xFF94A3B8)
                             )
                             AudioSourceMode.MIC -> MicIcon(
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier.size(12.dp),
                                 tint = if (isSelected) Color.White else Color(0xFF94A3B8)
                             )
                             AudioSourceMode.FILE -> AudioFileIcon(
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier.size(12.dp),
                                 tint = if (isSelected) Color.White else Color(0xFF94A3B8)
                             )
                         }
                         Text(
                             text = mode.name,
                             color = if (isSelected) Color.White else Color(0xFF94A3B8),
-                            fontSize = 11.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1
                         )
                     }
                 }
@@ -855,14 +960,14 @@ private fun VideoPlayerCard(
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(10.dp)
     ) {
-        Column(modifier = Modifier.padding(6.dp)) {
+        Column(modifier = Modifier.padding(4.dp)) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .height(164.dp)
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
@@ -905,38 +1010,40 @@ private fun VideoPlayerCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(3.dp))
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(22.dp)
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = fileName,
-                    style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF38BDF8),
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(end = 4.dp),
-                    fontSize = 11.sp
+                    fontSize = 10.sp
                 )
                 Text(
                     text = "%02d:%02d / %02d:%02d".format(
                         (positionMs / 1000) / 60, (positionMs / 1000) % 60,
                         (durationMs / 1000) / 60, (durationMs / 1000) % 60
                     ),
-                    style = MaterialTheme.typography.bodySmall,
                     color = Color.LightGray,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp
+                    fontSize = 9.5.sp,
+                    maxLines = 1
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Button(
                     onClick = onChangeFile,
-                    modifier = Modifier.height(26.dp),
+                    modifier = Modifier.height(22.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                 ) {
@@ -954,7 +1061,7 @@ private fun VideoPlayerCard(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(20.dp)
+                    .height(18.dp)
             )
         }
     }
@@ -970,43 +1077,53 @@ private fun FilePlaybackCard(
     onChangeFile: () -> Unit
 ) {
     Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(10.dp)
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(22.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                    Text(
-                        text = "AUDIO: $fileName",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF38BDF8),
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        fontSize = 11.sp
-                    )
-                    Text(
-                        text = "%02d:%02d / %02d:%02d".format(
-                            (positionMs / 1000) / 60, (positionMs / 1000) % 60,
-                            (durationMs / 1000) / 60, (durationMs / 1000) % 60
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.LightGray,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp
-                    )
-                }
-
+                Text(
+                    text = "AUDIO: $fileName",
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(end = 6.dp),
+                    fontSize = 10.sp
+                )
+                Text(
+                    text = "%02d:%02d / %02d:%02d".format(
+                        (positionMs / 1000) / 60, (positionMs / 1000) % 60,
+                        (durationMs / 1000) / 60, (durationMs / 1000) % 60
+                    ),
+                    color = Color.LightGray,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.width(6.dp))
                 Button(
                     onClick = onChangeFile,
-                    modifier = Modifier.height(28.dp),
+                    modifier = Modifier.height(22.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                 ) {
-                    Text("FILE", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("FILE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
             Slider(
@@ -1019,7 +1136,7 @@ private fun FilePlaybackCard(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(22.dp)
+                    .height(18.dp)
             )
         }
     }

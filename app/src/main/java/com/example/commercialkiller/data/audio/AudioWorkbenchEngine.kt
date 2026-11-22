@@ -208,6 +208,7 @@ class AudioWorkbenchEngine(
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {
         return try {
             val decoded = fileDecoder.decode(appContext, uri)
+            stop()
             loadedAudio = decoded
             filePlaybackOffset = 0
             isFileSeeking = false
@@ -616,8 +617,8 @@ class AudioWorkbenchEngine(
 
         var audioRecord: AudioRecord? = null
         val audioSources = intArrayOf(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.UNPROCESSED,
             MediaRecorder.AudioSource.DEFAULT
         )
 
@@ -665,28 +666,32 @@ class AudioWorkbenchEngine(
             val shortBuffer = ShortArray(chunkSize)
             val floatSamples = FloatArray(chunkSize)
             val waveformView = FloatArray(256)
+            var lastProcessTimeMs = 0L
 
             while (scope.isActive) {
-                // AudioRecord.read in blocking mode naturally synchronizes loop to 512 / 16000 = 32ms cadence
+                // AudioRecord.read keeps HAL input drained at 32ms; throttle UI/decision ticks to intervalMs.
                 val readCount = audioRecord.read(shortBuffer, 0, chunkSize)
 
                 if (readCount > 0) {
-                    for (i in 0 until readCount) {
-                        floatSamples[i] = (shortBuffer[i] / 32768.0f).coerceIn(-1f, 1f)
-                    }
-                    // Clear tail if partial read
-                    for (i in readCount until chunkSize) {
-                        floatSamples[i] = 0f
-                    }
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastProcessTimeMs >= _state.value.intervalMs) {
+                        lastProcessTimeMs = nowMs
+                        for (i in 0 until readCount) {
+                            floatSamples[i] = (shortBuffer[i] / 32768.0f).coerceIn(-1f, 1f)
+                        }
+                        for (i in readCount until chunkSize) {
+                            floatSamples[i] = 0f
+                        }
 
-                    processAudioFrame(
-                        samples = floatSamples,
-                        history = history,
-                        logs = logs,
-                        dateFormat = dateFormat,
-                        waveformView = waveformView,
-                        significantDescription = "Live Acoustic Shift Exceeded Threshold"
-                    )
+                        processAudioFrame(
+                            samples = floatSamples,
+                            history = history,
+                            logs = logs,
+                            dateFormat = dateFormat,
+                            waveformView = waveformView,
+                            significantDescription = "Live Acoustic Shift Exceeded Threshold"
+                        )
+                    }
                 } else if (readCount < 0) {
                     delay(50)
                 }

@@ -1,3 +1,4 @@
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.ui.components
 
 import androidx.compose.foundation.Canvas
@@ -22,7 +23,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.sp
 
 /**
@@ -161,26 +164,33 @@ fun DistanceMeter(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Shift Distance (Δ): %.4f".format(distance),
-                style = MaterialTheme.typography.bodySmall,
+                text = "Shift (Δ): %.4f".format(distance),
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
                 color = if (isTriggered) Color(0xFFFF5252) else Color(0xFF00E5FF)
             )
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = "Threshold (τ): %.2f".format(threshold),
-                style = MaterialTheme.typography.bodySmall,
+                text = "τ: %.2f".format(threshold),
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+                maxLines = 1,
+                softWrap = false,
                 color = Color.LightGray
             )
         }
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(2.dp))
 
         // Progress bar with threshold indicator
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(14.dp)
-                .background(Color(0xFF1E293B), RoundedCornerShape(7.dp))
-                .border(1.dp, Color(0xFF334155), RoundedCornerShape(7.dp))
+                .height(8.dp)
+                .background(Color(0xFF1E293B), RoundedCornerShape(4.dp))
+                .border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp))
         ) {
             val fillRatio = (distance / 0.8f).coerceIn(0f, 1f)
             val thresholdRatio = (threshold / 0.8f).coerceIn(0f, 1f)
@@ -189,10 +199,10 @@ fun DistanceMeter(
             Box(
                 modifier = Modifier
                     .fillMaxWidth(fillRatio)
-                    .height(14.dp)
+                    .height(8.dp)
                     .background(
                         if (isTriggered) Color(0xFFFF5252) else Color(0xFF00E5FF),
-                        RoundedCornerShape(7.dp)
+                        RoundedCornerShape(4.dp)
                     )
             )
 
@@ -200,13 +210,13 @@ fun DistanceMeter(
             Box(
                 modifier = Modifier
                     .fillMaxWidth(thresholdRatio)
-                    .height(14.dp)
+                    .height(8.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .width(2.dp)
-                        .height(14.dp)
+                        .height(8.dp)
                         .background(Color.Yellow)
                 )
             }

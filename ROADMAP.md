@@ -29,13 +29,13 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 | **Memory Allocation** | Scalar accumulator | Pre-allocated `previousFrame` `FloatArray` buffer + bounded 60,000 ms `ArrayDeque<Long>` |
 | **Action Gating** | Single threshold crossing ($\Delta > \tau$) | First-gate media check (`!isMedia` forces `HOLD`) + frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
 
-In `v2.3`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`.
+In `v2.3.01`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`.
 
 ---
 
 ## Fast Local Android Decision Model Architecture
 
-The v2.3 Fast Local Android Decision Model (`com.example.commercialkiller.data.decision.FrameDecisionEngine`) executes three non-autoregressive per-frame queries directly on Android hardware every 100 ms.
+The v2.3.01 Fast Local Android Decision Model (`com.example.commercialkiller.data.decision.FrameDecisionEngine`) executes three non-autoregressive per-frame queries directly on Android hardware every 100 ms.
 
 ### 1. Per-Frame Structured Queries (100 ms Cadence)
 
@@ -43,7 +43,7 @@ Every 100 ms analysis tick produces a `FrameDecision` record by executing three 
 
 1. **`is_media` (`evaluateMediaPresence`)**:
    - First-stage acoustic gate distinguishing broadcast TV/radio media from non-media states (`MediaEnvironment.BROADCAST_MEDIA`, `MediaEnvironment.SILENCE`, `MediaEnvironment.AMBIENT_NOISE`).
-   - Evaluates total Mel energy, spectral tilt, mid-band formant ratio vs. steady low-frequency car rumble (`zcr < 0.04`, `hfRatio < 0.45`) or flat broadband ambient noise (`(zcr > 0.30 || hfRatio > 1.35) && modRatio < 0.28 && rms < 0.22`), plus parallel classifier tag probabilities (`Dialogue`, `Speech`, `Commercial`, `Vehicle`, `Ambient`, `Silence`).
+   - Evaluates total Mel energy (`meanEnergy < 0.08f` silence floor), `0.020f` RMS thermal floor, spectral tilt, mid-band formant ratio vs. steady low-frequency car rumble (`zcr < 0.04`, `hfRatio < 0.45`), flat broadband ambient noise (`(zcr > 0.30 || hfRatio > 1.35) && modRatio < 0.28 && rms < 0.22`), unpitched room/pink/HVAC/rain noise (`computePreEmphasizedPitchCorrelation(samples)` across lags `32..min(200, n/2)` step 2 with `0.92f` pre-emphasis: `maxPitchCorr < 0.30f && rms < 0.14f`), plus parallel classifier tag probabilities (`Dialogue`, `Speech`, `Commercial`, `Vehicle`, `Ambient`, `Silence`, `Room`, `Hum`, `Air Conditioning`). Live `MIC` capture prioritizes `MediaRecorder.AudioSource.MIC` / `UNPROCESSED` / `DEFAULT` without ASR speech-band AGC and throttles `processAudioFrame` ticks to `_state.value.intervalMs` (`100 ms`).
    - Clamps `mediaScore` to `0.0f..1.0f` and checks `isMedia = mediaScore >= mediaThreshold` (default `0.50f`, slider `0.20f..0.90f`). When `!isMedia`, `isCommercial = false`, `commercialScore = 0f`, and `recommendedAction = TvActionDecision.HOLD` (resetting break streaks after `> 3` consecutive non-media frames).
 
 2. **`is_same_scene` (`evaluateSceneContinuity`)**:
@@ -74,7 +74,8 @@ Every 100 ms analysis tick produces a `FrameDecision` record by executing three 
 
 ### 3. UI Telemetry & Settings Integration
 
-- **`FrameDecisionBar` (`MainScreen.kt`)**: Displays color-coded status badges underneath `SpectrogramWaterfallCard`: `MEDIA (<score>%)` / `NO MEDIA: SILENCE` / `NO MEDIA: AMBIENT`, `COMMERCIAL (<score>%)` / `PROGRAM (<score>%)` / `HOLD (NON-MEDIA)`, `SAME SCENE (<sim>)` / `SCENE CUT (<sim>)`, and monospace shot telemetry (`Shot: <X.X>s | <N> cuts/min`).
+- **`MainScreen.kt` Fixed-Height Telemetry Layout**: Uses fixed-height, single-line ellipsized slots (`ShiftStatusBanner` `22.dp`, `FrameDecisionBar` `48.dp`, 3-slot `ClassifierLabelsContent` `24.dp`, `DistanceMeterCard` `34.dp`, `EventConsoleCard` `110.dp`) to eliminate vertical UI shift (`0 px` drift across `STEADY SIGNAL` / `SHIFT DETECTED` and `MEDIA` / `NO MEDIA` transitions).
+- **`FrameDecisionBar` (`MainScreen.kt`)**: Displays fixed-weight single-line badges underneath `SpectrogramWaterfallCard`: `MEDIA <score>%` / `NO MEDIA: SILENCE` / `NO MEDIA: AMBIENT`, `COMMERCIAL <score>%` / `PROGRAM <score>%` / `HOLD (NO MEDIA)`, `SAME <sim>` / `CUT <sim>`, and monospace telemetry (`Media: <score>% | Shot: <X.X>s` and `<N> cuts/min`).
 - **Threshold Controls (`SpectrogramSettingsSheet`)**: Exposes `Media Detection Threshold` (`0.20f..0.90f`) and `Scene Cut Similarity Threshold` (`0.50f..0.98f`) sliders bound to `AudioWorkbenchEngine`.
 
 ---

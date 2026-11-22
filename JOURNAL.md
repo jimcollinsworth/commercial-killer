@@ -933,6 +933,56 @@
   - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
 
 ---
+
+## 2026-11-22: Fixed-Height Non-Jumping UI & Empty-Room Live Mic NO MEDIA Detection (v2.3.01)
+
+> [!NOTE] User Instructions & Guidance:
+> - "Need to stop the screen jumping around as the indicators and labels change,  make screen sections fixed height, shrink size and dead space of tags, labels, indicators.    I tried the app on a phone, listened to empty room with mic, it didn't switch to no media."
+
+### Problem & Diagnosis
+- Conditional insertion/removal of `AlertBanner` and variable-row `FlowRow` wrapping inside `FrameDecisionBar` and `ClassifierLabelsContent` changed total column height dynamically between frames, shifting lower cards (`SpectrogramWaterfallCard`, `DistanceMeterCard`, `EventConsoleCard`) vertically during live playback.
+- Live `MIC` monitoring on a physical phone in an empty room remained in `MEDIA` / `PROGRAM` instead of switching to `NO MEDIA: SILENCE` or `NO MEDIA: AMBIENT`.
+- Testing deep-linked `.mp4` files with `--es audio_file` also exposed a startup race where `DisposableEffect(Unit)` launched `AudioSourceMode.SYNTH` while `AudioFileDecoder.decode()` suspended on `Dispatchers.IO`, causing `loadAudioFile()` to set `sourceMode = AudioSourceMode.FILE` before calling `start(AudioSourceMode.FILE)` and triggering the early-return guard in `start()`.
+
+### Root Cause & Technical Analysis
+1. **Unpitched Room Noise Misclassification**: No `yamnet.tflite` file is bundled in `app/src/main/assets`, so runtime classification uses `AudioClassifierEngine.classifyByAcousticFeatures`. In `AudioWorkbenchEngine.runLiveMicLoop()`, `MediaRecorder.AudioSource.VOICE_RECOGNITION` applied hardware AGC to quiet room air, lifting RMS into `0.015f..0.06f` (`zcr = 0.05..0.25`). Those samples missed both the vehicle branch (`zcr < 0.04f && hfRatio < 0.45f`) and broadband branch (`zcr > 0.30f || hfRatio > 1.35f`) and hit `Dialogue / Speech` with an inverted formula `(0.70f + (1.0f - rms) * 0.2f)` that scored quieter rooms up to `0.90f`.
+2. **Mel Floor & 32 ms Mic Update Rate**: `MelSpectrogramCalculator` maps `-45 dB` room noise to normalized log-dB bin values around `~0.25f` (`> 0.04f` prior Mel floor), and `runLiveMicLoop()` invoked `processAudioFrame()` on every 512-sample `audioRecord.read(...)` (~32 ms / 31 Hz), causing rapid UI state churn.
+3. **Empirical Pitch-Correlation Calibration (`PitchStats.java`, `jbr\bin\java.exe`)**: Across 7 offline 16 kHz mono PCM extracts (`512`-sample frames, `0.92f` first-order pre-emphasis, normalized autocorrelation across lags `32..200` step 2 for `80–500 Hz`), empty-room pink noise (`_empty.pcm`) measured `141/141` non-silent frames `< 0.26` (`avgPitch = 0.133`, `avgRms = 0.027`), rain (`_rain.pcm`) measured `119/121 < 0.30` (`avgPitch = 0.173`, `avgRms = 0.045`), car (`_car.pcm`) stayed caught by `< 0.04` ZCR (`149/150`, `avgRms = 0.305`), while broadcast news and commercials (`_cbs.pcm`, `_tv.pcm`, `_ad.pcm`, `_vw.pcm`) measured `avgPitch = 0.456..0.597`.
+4. **Layout Instability**: Variable height between absent vs. rendered `AlertBanner`, `FlowRow` badge wrapping in `FrameDecisionBar`, conditional/wrapping `ClassifierLabelsContent` chips, multi-line header padding, and oversized vertical spacing shifted elements below the status banner whenever classification labels or alert state changed.
+
+### Solution & Standard Procedure
+1. **Empty-Room Live MIC & Ambient Noise Fixes (`AudioWorkbenchEngine.kt`, `AudioClassifierEngine.kt`, `FrameDecisionEngine.kt`)**:
+   - Changed `runLiveMicLoop()` `audioSources` priority to `intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.DEFAULT)` and throttled `processAudioFrame(...)` calls to `_state.value.intervalMs` (`100 ms`) while draining `audioRecord.read(...)` continuously.
+   - Fixed the cold-start `SYNTH`/`FILE` race by calling `stop()` before updating `_state` inside `loadAudioFile()` and guarding `DisposableEffect(Unit)` in `MainScreen.kt` to only call `engine.start(AudioSourceMode.SYNTH)` when `sourceMode == AudioSourceMode.SYNTH && !isRunning`.
+   - In `AudioClassifierEngine.kt`, raised the RMS silence floor from `0.015f` to `0.020f`, added `computePreEmphasizedPitchCorrelation(samples)`, added `maxPitchCorr < 0.30f && rms < 0.14f` -> `Ambient / Room Noise` (`0.86f`), `Background Noise` (`0.72f`), `Non-Media Environment` (`0.50f`), and changed `Dialogue / Speech` confidence to `(0.65f + (maxPitchCorr * 0.22f) + (rms * 0.20f)).coerceIn(0.65f, 0.95f)`.
+   - In `FrameDecisionEngine.kt`, expanded non-media tag keywords (`room`, `air conditioning`, `hum`, `buzz`, `environmental`, `pink`, `white`, `motor`, `idle`) and raised the Mel low-energy silence floor from `0.04f` to `0.08f`.
+2. **Fixed-Height Compact Layout (`MainScreen.kt`, `SpectrogramVisualizer.kt`)**:
+   - Replaced conditional `AlertBanner` with always-rendered fixed-height `ShiftStatusBanner` (`height(22.dp)`, `"SHIFT DETECTED  Δ=%.4f > %.2f"` vs. `"STEADY SIGNAL   Δ=%.4f / τ=%.2f"`).
+   - Replaced wrapping `FlowRow` in `FrameDecisionBar` (`height(48.dp)`) with Row 1 (`20.dp`, weighted `1.25f`/`1.05f`/`0.95f` single-line pills at `9.5.sp`) and Row 2 (`16.dp`, monospace `"Media: %.0f%% | Shot: %.1fs"` + `"%.0f cuts/min"`).
+   - Replaced wrapping `FlowRow` in `ClassifierLabelsContent` with fixed-height `24.dp` 3-slot equal-weight `Row` (`9.5.sp`, `maxLines = 1`, `TextOverflow.Ellipsis`, or `"No active audio tags"` placeholder).
+   - Compacted `WorkbenchHeader` (`14.sp` title, `8.5.sp` TV pill, `34.dp` action buttons, `12.dp` source icons), `VideoPlayerCard` (`4.dp` padding, `164.dp` video, `22.dp` row, `18.dp` slider), `FilePlaybackCard` (`56.dp`), `SpectrogramWaterfallCard` (`4.dp` padding; `215.dp` video / `190.dp` short / `310.dp` phone / `340.dp` expanded), `DistanceMeterCard` (`34.dp`), `DistanceMeter` (`10.sp` single-line labels, `8.dp` progress bar), and `EventConsoleCard` (`110.dp` compact, `9.5.sp` single-line rows).
+3. **Test Asset, Unit Tests & Build (`app/build.gradle.kts`, `AudioClassifierEngineTest.kt`, `FrameDecisionEngineTest.kt`)**:
+   - Generated gitignored `test_assets/empty_room_mic_noise.mp4` (`138,969` bytes, 15s 480x360 black H.264 + 16 kHz mono AAC pink noise `amplitude=0.14`, `-movflags +faststart`).
+   - Incremented `versionCode = 15`, `versionName = "2.3.01"`, and added 3 unit tests (`unpitched empty room mic noise classifies as Ambient Room Noise rather than Speech`, `quiet empty room thermal floor under 0_020 RMS classifies as Silence`, `low energy mic floor and room hum tags gate to non-media HOLD`).
+   - `cmd.exe /c "gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug"`: `BUILD SUCCESSFUL in 27s` (`42` actionable tasks); **60/60** tests passed (`0` failures, `0` skipped, `0` errors across all 11 XML suites in `app/build/test-results/testDebugUnitTest/`).
+   - Copied `app-debug.apk` (`62,110,787` bytes); `zipalign.exe -c -P 16 -v 4 app-debug.apk` exited `0` (`Verification successful`); `llvm-objdump.exe -p` reported `align 2**14` on all `LOAD` segments across all 4 `arm64-v8a` `.so` libraries (`libandroidx.graphics.path.so`, `libimage_processing_util_jni.so`, `libmediapipe_tasks_jni.so`, `libsurface_util_jni.so`).
+4. **Emulator Layout Stability & USB Pixel 8 Deployment (`emulator-5554`, `42170DLJH001WS`)**:
+   - Captured 6 screenshots on `emulator-5554` (`empty_room`, `rain`, `cbs_program`, `cbs_commercial`, `vw_commercial`, `synth_commercial`) and verified `android layout --no-idle` bounds across video runs (`0 px` vertical drift): `ShiftStatusBanner` `y=[875..907]`, `FrameDecisionBar` Row 1 `y=[1555..1584]`, Row 2 `y=[1612..1641]`, `ClassifierLabelsContent` `y=[1688..1717]`, `DistanceMeter` `y=[1763..1795]`, `EventConsoleCard` header `y=[1849..1878]`, `LazyColumn` `y=[1899..2122]`.
+   - Installed `app-debug.apk` onto USB Pixel 8 (`42170DLJH001WS`, `Success`), pushed `empty_room_mic_noise.mp4` (`138,969` bytes) to `/sdcard/Download/empty_room_mic_noise.mp4`, launched `MainActivity` (`pidof` `29686`, `versionCode=15`, `versionName=2.3.01`), and verified `libmediapipe_tasks_jni.so` loaded `ok` with `0` fatal exceptions and `0` 16 KB alignment warnings in `logcat -d -t 2500`.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Recorded Step Count**: `2275` steps in transcript at entry logging
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - `ffmpeg.exe` 8.0 (`empty_room_mic_noise.mp4` generation & 16 kHz PCM extraction) and `jbr\bin\java.exe` (`PitchStats.java` across 7 audio clips)
+  - Gradle / JDK 21 JBR (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), LLVM `llvm-objdump.exe`, and `android` CLI (`screen capture`, `layout --no-idle`)
+  - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 
 
