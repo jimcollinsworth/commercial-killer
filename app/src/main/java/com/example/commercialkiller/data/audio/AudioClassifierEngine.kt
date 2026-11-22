@@ -14,7 +14,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 data class ClassifierScore(
@@ -215,14 +214,44 @@ class AudioClassifierEngine(
         }
         val hfRatio = (sqrt(highFreqEnergy / samples.size) / (rms + 1e-6f)).toFloat()
 
-        // Distinguish Speech vs Music vs Commercial/Jingle:
-        // Commercials typically feature high RMS loudness, high compressed energy, and elevated HF energy.
-        // Speech has moderate ZCR and dynamic modulation.
-        // Music has tonal consistency and balanced HF ratio.
+        // 4. Temporal envelope modulation ratio across 4 subframes (distinguishes speech/ads from steady ambient noise)
+        val quarter = (samples.size / 4).coerceAtLeast(1)
+        var minSubRms = Float.MAX_VALUE
+        var maxSubRms = 0f
+        for (q in 0 until 4) {
+            val start = q * quarter
+            val end = if (q == 3) samples.size else ((q + 1) * quarter).coerceAtMost(samples.size)
+            val len = (end - start).coerceAtLeast(1)
+            var qSq = 0.0
+            for (idx in start until end) {
+                val v = samples[idx]
+                qSq += v * v
+            }
+            val subRms = sqrt(qSq / len).toFloat()
+            if (subRms < minSubRms) minSubRms = subRms
+            if (subRms > maxSubRms) maxSubRms = subRms
+        }
+        val modRatio = (maxSubRms - minSubRms) / (rms + 1e-6f)
+
+        // Distinguish Non-Media (Vehicle Rumble / Steady Ambient) vs Commercial vs Speech vs Music:
+        // Car cabin / engine rumble is concentrated below ~300 Hz (very low ZCR and low HF ratio).
+        // Rain / HVAC / road hiss is broadband, unmodulated over short frames (low modRatio), and below ad loudness.
         val isHighLoudness = rms > 0.18f
         val isHighFrequencyBed = hfRatio > 1.2f
 
-        val rawList = if (isHighLoudness && isHighFrequencyBed) {
+        val rawList = if (zcr < 0.04f && hfRatio < 0.45f) {
+            listOf(
+                ClassifierScore("Vehicle / Low-Freq Rumble", 0.86f),
+                ClassifierScore("Ambient / Non-Media", 0.72f),
+                ClassifierScore("Background Noise", 0.45f)
+            )
+        } else if ((zcr > 0.30f || hfRatio > 1.35f) && modRatio < 0.28f && rms < 0.22f) {
+            listOf(
+                ClassifierScore("Ambient / Room Noise", 0.84f),
+                ClassifierScore("Background Noise", 0.70f),
+                ClassifierScore("Non-Media Environment", 0.45f)
+            )
+        } else if (isHighLoudness && isHighFrequencyBed) {
             listOf(
                 ClassifierScore("Commercial / Jingle", (0.75f + (rms * 0.2f)).coerceAtMost(0.98f)),
                 ClassifierScore("Music Bed", 0.65f),

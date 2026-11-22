@@ -55,7 +55,10 @@
 - [x] `FrameDecisionBar` HUD badges in `MainScreen.kt` (COMMERCIAL/PROGRAM score, SAME SCENE/SCENE CUT cosine similarity, and Shot duration / cuts per minute telemetry) across compact and expanded two-pane layouts (v2.2)
 - [x] Scene Cut Similarity Threshold slider (`0.50f..0.98f`) in `SpectrogramSettingsSheet` wired to `AudioWorkbenchEngine.setSceneSimilarityThreshold` (v2.2)
 - [x] Automated unit tests covering `is_commercial`, `is_same_scene`, scene cuts, shot duration, rolling cut cadence pruning, threshold clamping, `MUTE`/`UNMUTE`/`HOLD` gating, and `AudioWorkbenchEngine.setSceneSimilarityThreshold` (`FrameDecisionEngineTest.kt` and `AudioWorkbenchEngineTest.kt`) (v2.2)
-- [ ] Cross-Modal Audio-Visual Fingerprint Caching (Learn and snapshot pre-break program signature [Mel-spectrogram + camera frame palette & station bug] prior to muting, enabling high-confidence visual recognition of program return to trigger unmute)
+- [x] First-gate Per-Frame Media Presence Query (`is_media`) in `FrameDecisionEngine` distinguishing `BROADCAST_MEDIA`, `SILENCE`, and `AMBIENT_NOISE` (car driving low-frequency rumble & steady broadband noise) before `is_commercial` evaluation (v2.3)
+- [x] Acoustic non-media classifiers in `AudioClassifierEngine` (Vehicle Engine/Road Rumble via low ZCR/HF energy + Stationary Broadband Ambient Noise via high ZCR/HF energy and low subframe RMS modulation) (v2.3)
+- [x] First-gate `MEDIA` / `NO MEDIA: SILENCE` / `NO MEDIA: AMBIENT` + `HOLD (NON-MEDIA)` badges in `FrameDecisionBar` and `Media Detection Threshold` slider (`0.20f..0.90f`) in `SpectrogramSettingsSheet` (v2.3)
+- [ ] Cross-Modal Audio-Visual Fingerprint Caching (Learn and snapshot pre-break program signature [Mel-spectrogram + camera frame palette & station bug] prior to muting, enabling visual recognition of program return to trigger unmute)
 - [ ] Vision-Based Spectrogram Image Comparison & Evaluation (Convert Mel-spectrograms to 2D image tensors/bitmaps and evaluate transitions using an on-device vision/image model)
 - [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)
 - [ ] ADK for Kotlin 1.0 integration (deferred until later release)
@@ -63,4 +66,4 @@
 - [ ] Game-Style HUD & POV UI redesign (deferred for future iteration)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*

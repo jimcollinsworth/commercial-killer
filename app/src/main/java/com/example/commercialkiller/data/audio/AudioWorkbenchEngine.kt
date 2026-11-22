@@ -1,4 +1,5 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 package com.example.commercialkiller.data.audio
 
@@ -68,7 +69,8 @@ data class WorkbenchState(
     val mediaUri: Uri? = null,
     val numMelBands: Int = 80,
     val frameDecision: FrameDecision = FrameDecision(),
-    val sceneSimilarityThreshold: Float = FrameDecisionEngine.DEFAULT_SCENE_SIMILARITY_THRESHOLD
+    val sceneSimilarityThreshold: Float = FrameDecisionEngine.DEFAULT_SCENE_SIMILARITY_THRESHOLD,
+    val mediaThreshold: Float = FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD
 ) {
     val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.MIC
 }
@@ -124,6 +126,7 @@ class AudioWorkbenchEngine(
                 isTvMuted = false,
                 frameDecision = FrameDecision(),
                 sceneSimilarityThreshold = decisionEngine.getSceneSimilarityThreshold(),
+                mediaThreshold = decisionEngine.getMediaThreshold(),
                 isVideo = if (sourceMode == AudioSourceMode.FILE) (loadedAudio?.isVideo ?: current.isVideo) else false
             )
         }
@@ -194,6 +197,12 @@ class AudioWorkbenchEngine(
         decisionEngine.setSceneSimilarityThreshold(value)
         val clamped = decisionEngine.getSceneSimilarityThreshold()
         _state.update { current -> current.copy(sceneSimilarityThreshold = clamped) }
+    }
+
+    fun setMediaThreshold(value: Float) {
+        decisionEngine.setMediaThreshold(value)
+        val clamped = decisionEngine.getMediaThreshold()
+        _state.update { current -> current.copy(mediaThreshold = clamped) }
     }
 
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {

@@ -25,23 +25,28 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 | **Inference Type** | Single-frame vector distance | Non-autoregressive discriminative System 1 evaluator |
 | **Execution Interval** | 100 ms (configurable) | 100 ms per-frame evaluation |
 | **Primary Inputs** | Current & previous Mel vectors ($S_t, S_{t-1}$) | Mel vector $\vec{F}_t$, `List<ClassifierScore>`, shift distance $\Delta$, cut cadence |
-| **Structured Outputs** | Scalar shift distance ($\Delta$) | `is_commercial` score/flag, `is_same_scene` cosine similarity, `shotDurationMs`, `cutCadencePerMin`, `TvActionDecision` |
+| **Structured Outputs** | Scalar shift distance ($\Delta$) | `is_media` (`MediaEnvironment`), `is_commercial`, `is_same_scene` cosine similarity, `shotDurationMs`, `cutCadencePerMin`, `TvActionDecision` |
 | **Memory Allocation** | Scalar accumulator | Pre-allocated `previousFrame` `FloatArray` buffer + bounded 60,000 ms `ArrayDeque<Long>` |
-| **Action Gating** | Single threshold crossing ($\Delta > \tau$) | Frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
+| **Action Gating** | Single threshold crossing ($\Delta > \tau$) | First-gate media check (`!isMedia` forces `HOLD`) + frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
 
-In `v2.2`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_same_scene` and `is_commercial` to drive `TvControlManager`.
+In `v2.3`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`.
 
 ---
 
 ## Fast Local Android Decision Model Architecture
 
-The v2.2 Fast Local Android Decision Model (`com.example.commercialkiller.data.decision.FrameDecisionEngine`) replaces autoregressive prompt-based evaluation with a deterministic, non-autoregressive System 1 frame evaluator running directly on Android hardware every 100 ms.
+The v2.3 Fast Local Android Decision Model (`com.example.commercialkiller.data.decision.FrameDecisionEngine`) executes three non-autoregressive per-frame queries directly on Android hardware every 100 ms.
 
 ### 1. Per-Frame Structured Queries (100 ms Cadence)
 
-Every 100 ms analysis tick produces a `FrameDecision` record by executing two structured queries:
+Every 100 ms analysis tick produces a `FrameDecision` record by executing three structured queries:
 
-1. **`is_same_scene` (`evaluateSceneContinuity`)**:
+1. **`is_media` (`evaluateMediaPresence`)**:
+   - First-stage acoustic gate distinguishing broadcast TV/radio media from non-media states (`MediaEnvironment.BROADCAST_MEDIA`, `MediaEnvironment.SILENCE`, `MediaEnvironment.AMBIENT_NOISE`).
+   - Evaluates total Mel energy, spectral tilt, mid-band formant ratio vs. steady low-frequency car rumble (`zcr < 0.04`, `hfRatio < 0.45`) or flat broadband ambient noise (`(zcr > 0.30 || hfRatio > 1.35) && modRatio < 0.28 && rms < 0.22`), plus parallel classifier tag probabilities (`Dialogue`, `Speech`, `Commercial`, `Vehicle`, `Ambient`, `Silence`).
+   - Clamps `mediaScore` to `0.0f..1.0f` and checks `isMedia = mediaScore >= mediaThreshold` (default `0.50f`, slider `0.20f..0.90f`). When `!isMedia`, `isCommercial = false`, `commercialScore = 0f`, and `recommendedAction = TvActionDecision.HOLD` (resetting break streaks after `> 3` consecutive non-media frames).
+
+2. **`is_same_scene` (`evaluateSceneContinuity`)**:
    - Computes the cosine similarity between consecutive Mel-spectrogram feature vectors $\vec{F}_t$ (current frame) and $\vec{F}_{t-1}$ (pre-allocated previous frame buffer) across $B$ Mel bands (40–128 bands, default 80):
      $$\text{similarity}(\vec{F}_t, \vec{F}_{t-1}) = \frac{\vec{F}_t \cdot \vec{F}_{t-1}}{\|\vec{F}_t\| \, \|\vec{F}_{t-1}\|} = \frac{\sum_{i=1}^{B} F_{t,i} \, F_{t-1,i}}{\sqrt{\sum_{i=1}^{B} F_{t,i}^2} \sqrt{\sum_{i=1}^{B} F_{t-1,i}^2}}$$
    - **Boundary Handling**: On the first frame, when either vector norm is zero, or when the configured Mel band count $B$ changes, `similarity = 1.0f` and `isSameScene = true` (initializing `currentShotStartMs = timestampMs`).
@@ -52,8 +57,8 @@ Every 100 ms analysis tick produces a `FrameDecision` record by executing two st
      - Emits `shotDurationMs = (timestampMs - currentShotStartMs).coerceAtLeast(0L)` and `cutCadencePerMin = cutTimestampsMs.size.toFloat()`.
    - **Hot-Loop Allocation Avoidance**: Copies `currentFeatures` into a reused `previousFrame` `FloatArray` in place without per-frame heap allocation.
 
-2. **`is_commercial` (`evaluateCommercial`)**:
-   - Evaluates a bounded discriminative commercial likelihood score (`commercialScore` clamped to `0.0f..1.0f`) by combining three signal groups:
+3. **`is_commercial` (`evaluateCommercial`)**:
+   - Executed when `isMedia` is true; evaluates a bounded discriminative commercial likelihood score (`commercialScore` clamped to `0.0f..1.0f`) by combining three signal groups:
      - **Classifier Tag Probabilities**: Weighted sum over parallel LiteRT / MediaPipe `List<ClassifierScore>` tags, applying positive weights for commercial, jingle, music, singing, and advertisement classes and offsetting weights for program speech, dialogue, and silence classes.
      - **Spectral Compression & Loudness Density**: Evaluates elevated mean Mel energy, low band-to-band variance (full-spectrum dynamic range compression), and the 1D frame transition `shiftDistance`.
      - **Rolling Cut Cadence Boost**: Adds positive commercial weight when `cutCadencePerMin >= 15f` cuts/min.
@@ -61,15 +66,16 @@ Every 100 ms analysis tick produces a `FrameDecision` record by executing two st
 
 ### 2. Telemetry & Action Gating (`TvActionDecision`)
 
-`FrameDecisionEngine.evaluateFrame(...)` tracks consecutive state counters (`consecutiveCommercialFrames` and `consecutiveProgramFrames`) to emit `TvActionDecision`:
-- **`TvActionDecision.MUTE`**: Triggered when `isCommercial && (!isSameScene || consecutiveCommercialFrames >= 3)` (requires either a simultaneous scene cut or 3 consecutive commercial frames, >= 300 ms at 100 ms cadence).
-- **`TvActionDecision.UNMUTE`**: Triggered when `!isCommercial && consecutiveProgramFrames >= 5` (5 consecutive non-commercial program frames, >= 500 ms hysteresis).
-- **`TvActionDecision.HOLD`**: Emitted on all intermediate frames to prevent chattering across transient spikes.
+`FrameDecisionEngine.evaluateFrame(...)` evaluates Gate 1 (`isMedia`) first, then tracks consecutive state counters (`consecutiveCommercialFrames` and `consecutiveProgramFrames`) to emit `TvActionDecision`:
+- **`TvActionDecision.HOLD` (Non-Media Gate)**: Forced when `!isMedia` (`SILENCE` or `AMBIENT_NOISE`); resets break counters after `> 3` consecutive non-media frames (`NON_MEDIA_STREAK_RESET_FRAMES`).
+- **`TvActionDecision.MUTE`**: Triggered when `isMedia && isCommercial && (!isSameScene || consecutiveCommercialFrames >= 3)` (requires either a simultaneous scene cut or 3 consecutive commercial frames, >= 300 ms at 100 ms cadence).
+- **`TvActionDecision.UNMUTE`**: Triggered when `isMedia && !isCommercial && consecutiveProgramFrames >= 5` (5 consecutive non-commercial program frames, >= 500 ms hysteresis).
+- **`TvActionDecision.HOLD` (Hysteresis)**: Emitted on all intermediate frames.
 
 ### 3. UI Telemetry & Settings Integration
 
-- **`FrameDecisionBar` (`MainScreen.kt`)**: Displays color-coded status badges underneath `SpectrogramWaterfallCard`: `COMMERCIAL (<score>%)` / `PROGRAM (<score>%)`, `SAME SCENE (<sim>)` / `SCENE CUT (<sim>)`, and monospace shot telemetry (`Shot: <X.X>s | <N> cuts/min`).
-- **Threshold Control (`SpectrogramSettingsSheet`)**: Exposes the `Scene Cut Similarity Threshold` slider (`0.50f..0.98f`) bound to `AudioWorkbenchEngine.setSceneSimilarityThreshold(value)`.
+- **`FrameDecisionBar` (`MainScreen.kt`)**: Displays color-coded status badges underneath `SpectrogramWaterfallCard`: `MEDIA (<score>%)` / `NO MEDIA: SILENCE` / `NO MEDIA: AMBIENT`, `COMMERCIAL (<score>%)` / `PROGRAM (<score>%)` / `HOLD (NON-MEDIA)`, `SAME SCENE (<sim>)` / `SCENE CUT (<sim>)`, and monospace shot telemetry (`Shot: <X.X>s | <N> cuts/min`).
+- **Threshold Controls (`SpectrogramSettingsSheet`)**: Exposes `Media Detection Threshold` (`0.20f..0.90f`) and `Scene Cut Similarity Threshold` (`0.50f..0.98f`) sliders bound to `AudioWorkbenchEngine`.
 
 ---
 
@@ -286,5 +292,5 @@ By combining the **Camera Video Stream** with **Audio Mel-Spectrogram Tracking**
   - Tie transition detection to automatic `TvControlManager.sendMute()` and return detection to `TvControlManager.sendUnmute()`.
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 

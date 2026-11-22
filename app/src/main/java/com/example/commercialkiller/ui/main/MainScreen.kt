@@ -1,5 +1,6 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.ui.main
 
 import android.Manifest
@@ -74,6 +75,7 @@ import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
 import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.data.audio.WorkbenchEvent
 import com.example.commercialkiller.data.decision.FrameDecision
+import com.example.commercialkiller.data.decision.MediaEnvironment
 import com.example.commercialkiller.ui.components.AudioFileIcon
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.HelpIcon
@@ -139,10 +141,12 @@ fun MainScreen(
             intervalMs = state.intervalMs,
             threshold = state.threshold,
             numMelBands = state.numMelBands,
+            mediaThreshold = state.mediaThreshold,
             sceneSimilarityThreshold = state.sceneSimilarityThreshold,
             onIntervalChanged = { engine.setInterval(it) },
             onThresholdChanged = { engine.setThreshold(it) },
             onMelBandsChanged = { engine.setMelBands(it) },
+            onMediaThresholdChanged = { engine.setMediaThreshold(it) },
             onSceneSimilarityThresholdChanged = { engine.setSceneSimilarityThreshold(it) },
             onDismiss = { showSettingsSheet = false }
         )
@@ -461,11 +465,27 @@ private fun FrameDecisionBar(
     decision: FrameDecision,
     modifier: Modifier = Modifier
 ) {
-    val commercialBg = if (decision.isCommercial) Color(0xFFDC2626) else Color(0xFF16A34A)
-    val commercialText = if (decision.isCommercial) {
-        "COMMERCIAL (%.0f%%)".format(decision.commercialScore * 100f)
-    } else {
-        "PROGRAM (%.0f%%)".format((1f - decision.commercialScore) * 100f)
+    val mediaBg = when {
+        decision.isMedia -> Color(0xFF0D9488)
+        decision.mediaEnvironment == MediaEnvironment.SILENCE -> Color(0xFF475569)
+        else -> Color(0xFF64748B)
+    }
+    val mediaText = when {
+        decision.isMedia -> "MEDIA (%.0f%%)".format(decision.mediaScore * 100f)
+        decision.mediaEnvironment == MediaEnvironment.SILENCE ->
+            "NO MEDIA: SILENCE (%.0f%%)".format(decision.mediaScore * 100f)
+        else -> "NO MEDIA: AMBIENT (%.0f%%)".format(decision.mediaScore * 100f)
+    }
+
+    val commercialBg = when {
+        !decision.isMedia -> Color(0xFF334155)
+        decision.isCommercial -> Color(0xFFDC2626)
+        else -> Color(0xFF16A34A)
+    }
+    val commercialText = when {
+        !decision.isMedia -> "HOLD (NON-MEDIA)"
+        decision.isCommercial -> "COMMERCIAL (%.0f%%)".format(decision.commercialScore * 100f)
+        else -> "PROGRAM (%.0f%%)".format((1f - decision.commercialScore) * 100f)
     }
 
     val sceneBg = if (decision.isSameScene) Color(0xFF0284C7) else Color(0xFFD97706)
@@ -492,6 +512,21 @@ private fun FrameDecisionBar(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .background(mediaBg, DecisionBadgeShape)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = mediaText,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterVertically)
@@ -992,8 +1027,8 @@ private fun FilePlaybackCard(
 
 /**
  * Spectrogram & Analysis Settings Panel:
- * Controls the significance threshold (τ), cosine similarity scene-cut threshold, analysis interval,
- * Mel filterbank bands, and classifier visibility parameters without consuming permanent main-screen space.
+ * Controls the significance threshold (τ), first-gate media threshold, cosine similarity scene-cut
+ * threshold, analysis interval, and Mel filterbank bands without consuming permanent main-screen space.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1001,10 +1036,12 @@ private fun SpectrogramSettingsSheet(
     intervalMs: Long,
     threshold: Float,
     numMelBands: Int,
+    mediaThreshold: Float,
     sceneSimilarityThreshold: Float,
     onIntervalChanged: (Long) -> Unit,
     onThresholdChanged: (Float) -> Unit,
     onMelBandsChanged: (Int) -> Unit,
+    onMediaThresholdChanged: (Float) -> Unit,
     onSceneSimilarityThresholdChanged: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1073,6 +1110,41 @@ private fun SpectrogramSettingsSheet(
                     colors = SliderDefaults.colors(
                         thumbColor = Color(0xFF38BDF8),
                         activeTrackColor = Color(0xFF0284C7)
+                    )
+                )
+            }
+
+            // Media Detection Threshold Slider (Gate 1)
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Media Detection Threshold",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.LightGray
+                    )
+                    Text(
+                        text = "%.2f".format(mediaThreshold),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF14B8A6)
+                    )
+                }
+                Text(
+                    text = "Minimum confidence to classify frame as broadcast TV/radio media rather than silence or room/car noise",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp
+                )
+                Slider(
+                    value = mediaThreshold.coerceIn(0.20f, 0.90f),
+                    onValueChange = onMediaThresholdChanged,
+                    valueRange = 0.20f..0.90f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF14B8A6),
+                        activeTrackColor = Color(0xFF0D9488)
                     )
                 )
             }

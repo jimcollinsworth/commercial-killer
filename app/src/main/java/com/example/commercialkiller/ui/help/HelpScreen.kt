@@ -1,5 +1,6 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.6.
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.ui.help
 
 import androidx.compose.foundation.background
@@ -160,29 +161,36 @@ fun HelpScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "1. Per-Frame Commercial Query (is_commercial)",
-                            description = "Evaluates each 100 ms audio frame via a non-autoregressive discriminator combining classifier tag scores, Mel-band loudness compression density and variance, shift distance Δ, and cut cadence into a clamped 0.00–1.00 commercial score."
+                            title = "1. Per-Frame Media Presence Query (is_media)",
+                            description = "First-stage acoustic gate distinguishing broadcast TV/radio media (speech formants, jingles, television modulation) from non-media states including silence, stationary room/rain broadband noise, and low-frequency vehicle driving rumble. Frames below the Media Detection Threshold (0.20–0.90, default 0.50) hold action and prevent false commercial muting."
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "2. Per-Frame Scene Continuity Query (is_same_scene)",
+                            title = "2. Per-Frame Commercial Query (is_commercial)",
+                            description = "Executed when is_media is true: evaluates each 100 ms audio frame via a non-autoregressive discriminator combining classifier tag scores, Mel-band loudness compression density and variance, shift distance Δ, and cut cadence into a clamped 0.00–1.00 commercial score."
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        HelpSubItem(
+                            title = "3. Per-Frame Scene Continuity Query (is_same_scene)",
                             description = "Computes cosine similarity between the current Mel-spectrogram vector F_t and previous frame vector F_{t-1}: dot(F_t, F_{t-1}) / (||F_t|| * ||F_{t-1}||). Frames below the Scene Cut Similarity Threshold (0.50–0.98, default 0.85) register a scene cut."
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "3. Shot Duration & Rolling Cut Cadence",
+                            title = "4. Shot Duration & Rolling Cut Cadence",
                             description = "Tracks elapsed milliseconds since the last scene cut (shot duration) and counts scene cuts over a rolling 60,000 ms window (cuts/min) using pre-allocated float frame buffers."
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "4. MUTE / UNMUTE / HOLD Action Gating",
-                            description = "Applies consecutive-frame hysteresis before dispatching TV control signals: emits MUTE on commercial scoring with a scene cut or 3 consecutive commercial frames, UNMUTE after 5 consecutive program frames, and HOLD otherwise."
+                            title = "5. MUTE / UNMUTE / HOLD Action Gating",
+                            description = "Applies first-gate media filtering and consecutive-frame hysteresis before dispatching TV control signals: holds non-media frames (HOLD, resetting break streaks after > 3 non-media frames), emits MUTE on media commercial frames with a scene cut or 3 consecutive frames, and emits UNMUTE after 5 consecutive program frames."
                         )
                     }
                 }

@@ -1,6 +1,6 @@
 # Commercial Killer — Audio/Video AI Workbench
 
-An on-device experimentation workbench and real-time processing engine for Android (v2.2). Commercial Killer ingests live camera/microphone streams or local files, computes real-time Mel-spectrograms (40–128 bands), executes parallel LiteRT-ML / MediaPipe audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to detect commercial breaks, track scene continuity, and trigger TV muting with zero cloud dependencies.
+An on-device experimentation workbench and real-time processing engine for Android (v2.3). Commercial Killer ingests live camera/microphone streams or local files, computes real-time Mel-spectrograms (40–128 bands), executes parallel MediaPipe / heuristic audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to distinguish broadcast TV/radio media from silence/ambient environments (`is_media`), detect commercial breaks (`is_commercial`), track scene continuity (`is_same_scene`), and trigger TV muting with zero cloud dependencies.
 
 ## Core Features & Vision
 
@@ -15,13 +15,14 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - Native integration with LiteRT-ML (TFLite), MediaPipe, and open-weights Hugging Face audio models
 - **Fast Local Android Decision Model (`FrameDecisionEngine`)**:
   - Non-autoregressive per-frame evaluation every 100 ms with zero token generation latency
-  - `is_commercial`: Discriminative scoring combining classifier tags, Mel spectral compression/loudness density, shift distance, and rolling cut cadence
+  - `is_media`: First-gate acoustic presence classifier distinguishing `BROADCAST_MEDIA` (TV/radio) from `SILENCE` and `AMBIENT_NOISE` (vehicle driving rumble or steady room/rain noise)
+  - `is_commercial`: Discriminative scoring combining classifier tags, Mel spectral compression/loudness density, shift distance, and rolling cut cadence (gated on `is_media`)
   - `is_same_scene`: Cosine similarity comparison between consecutive Mel-spectrogram frames ($\vec{F}_t$ vs $\vec{F}_{t-1}$) tracking shot duration and cuts/min over a 60-second window
   - Hysteresis-gated `MUTE`, `UNMUTE`, and `HOLD` action outputs integrated into `TvControlManager`
 - **Real-Time Workbench Dashboard**:
   - Synchronized top video display when processing video files
   - High-resolution graphical Mel-spectrogram waterfall / heatmap
-  - `FrameDecisionBar` HUD badges (`COMMERCIAL`/`PROGRAM`, `SAME SCENE`/`SCENE CUT`, shot duration, and cuts/min)
+  - `FrameDecisionBar` HUD badges (`MEDIA`/`NO MEDIA: SILENCE`/`NO MEDIA: AMBIENT`, `COMMERCIAL`/`PROGRAM`/`HOLD (NON-MEDIA)`, `SAME SCENE`/`SCENE CUT`, shot duration, and cuts/min)
   - Live classifier tag display and execution log console
 
 ## Architecture & Directory Layout
@@ -34,7 +35,7 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite.
   - `data/audio/MelSpectrogramCalculator.kt`: Configurable 40–128 band Mel-spectrogram calculation (default 80) using Cooley-Tukey FFT.
   - `data/audio/SpectrogramComparator.kt`: Frame-to-frame matrix distance comparator with configurable thresholding.
-  - `data/decision/FrameDecisionEngine.kt`: Non-autoregressive per-frame decision model evaluating `is_commercial`, `is_same_scene` cosine similarity, shot duration, rolling cut cadence, and `MUTE`/`UNMUTE`/`HOLD` gating.
+  - `data/decision/FrameDecisionEngine.kt`: Non-autoregressive per-frame decision model evaluating `is_media` (`MediaEnvironment`), `is_commercial`, `is_same_scene` cosine similarity, shot duration, rolling cut cadence, and `MUTE`/`UNMUTE`/`HOLD` gating.
   - `data/action/TvControlManager.kt`: Unified TV/Soundbar control manager handling persistent settings (SharedPreferences) and multi-channel MUTE/UNMUTE dispatch (Webhook / IR / USB IR).
   - `data/action/IrEmitterController.kt`: Hardware IR transmitter controller (`ConsumerIrManager` 38 kHz NEC pulses) and Hisense TV HTTP Webhook runner.
   - `data/action/UsbIrDongleController.kt`: External USB-C IR transmitter controller (`UsbManager` for `10C4:8468` Tview / Tiqiaa dongles).
@@ -67,4 +68,4 @@ gradlew.bat assembleDebug
 ```
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*

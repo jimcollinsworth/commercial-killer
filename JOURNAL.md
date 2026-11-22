@@ -886,6 +886,53 @@
   - Gradle / JDK 17 (`gradlew.bat testDebugUnitTest assembleDebug`)
 
 ---
+---
+
+## 2026-11-22: First-Gate Media Presence Decision Check (is_media) & Multi-Scenario Broadcast Testing (v2.3)
+
+> [!NOTE] User Instructions & Guidance:
+> - "need one more important decision check, first is this media or not,   tv/radio vs nothing, or in a car, or whatever.  add this to is comercial or not. download a few more videos to check this and other possibilities. /android-tips-and-debugging"
+
+### Problem & Diagnosis
+- In `v2.2`, `FrameDecisionEngine` evaluated `is_commercial` and `is_same_scene` directly on every audio frame without a preceding media-presence check (`is_media`), allowing non-media audio environments (silence/empty room, vehicle engine/road rumble, or stationary ambient noise) to reach commercial scoring or carry stale consecutive-frame streaks across idle periods.
+- Additional test videos were required in `test_assets/` to exercise non-media driving, non-media rain ambience, modern broadcast news + commercial transitions, and multi-state transitions.
+
+### Root Cause & Technical Analysis
+- `AudioClassifierEngine.classifyByAcousticFeatures` evaluated silence (`rms < 0.015f`), commercial loudness, speech ZCR, and music fallback, without dedicated branches for low-frequency steady vehicle rumble (`zcr < 0.04f && hfRatio < 0.45f`) or unmodulated broadband ambient noise (`(zcr > 0.30f || hfRatio > 1.35f) && modRatio < 0.28f && rms < 0.22f`).
+- `FrameDecisionEngine` required an upfront `evaluateMediaPresence` gate to classify frames into `MediaEnvironment.BROADCAST_MEDIA`, `MediaEnvironment.SILENCE`, or `MediaEnvironment.AMBIENT_NOISE` before invoking `scoreCommercialInternal`, forcing `isCommercial = false`, `commercialScore = 0f`, and `TvActionDecision.HOLD` while non-media persists (and resetting break counters after `> 3` consecutive non-media frames).
+
+### Solution & Standard Procedure
+1. **Acoustic Non-Media Classifiers (`AudioClassifierEngine.kt`)**:
+   - Added 4-subframe RMS envelope modulation calculation (`modRatio`) and classification branches for `Vehicle / Low-Freq Rumble` and `Ambient / Room Noise`.
+2. **First-Gate `is_media` Query (`FrameDecisionEngine.kt`, `AudioWorkbenchEngine.kt`)**:
+   - Added `MediaEnvironment` (`BROADCAST_MEDIA`, `SILENCE`, `AMBIENT_NOISE`), `MediaEvaluationResult`, `evaluateMediaPresence(...)`, `isMedia`/`mediaScore`/`mediaEnvironment` fields on `FrameDecision`, and configurable `mediaThreshold` (`0.20f..0.90f`, default `0.50f`).
+   - Updated `evaluateFrame` to run `evaluateMediaPresenceInternal` ahead of `scoreCommercialInternal` and hold TV control output during non-media frames.
+   - Wired `mediaThreshold` and `setMediaThreshold(Float)` into `WorkbenchState` and `AudioWorkbenchEngine`.
+3. **UI Telemetry & Settings (`MainScreen.kt`, `HelpScreen.kt`)**:
+   - Added Gate 1 badge (`MEDIA (xx%)`, `NO MEDIA: SILENCE (xx%)`, `NO MEDIA: AMBIENT (xx%)`) and Gate 2 state (`HOLD (NON-MEDIA)` vs `COMMERCIAL`/`PROGRAM`) inside `FrameDecisionBar`.
+   - Added `Media Detection Threshold` slider (`0.20f..0.90f`) to `SpectrogramSettingsSheet` and documented the 3-stage decision pipeline in `HelpScreen.kt`.
+4. **Unit Tests & Versioning (`app/build.gradle.kts`, `app/src/test/...`)**:
+   - Incremented `versionCode = 14`, `versionName = "2.3"`.
+   - Added 6 unit tests across `FrameDecisionEngineTest.kt`, `AudioClassifierEngineTest.kt`, and `AudioWorkbenchEngineTest.kt`, and updated `evaluateFrame_interruptedCommercialStreakResetsCounter` to test broadcast dialogue interruption.
+5. **Verification & Real-World Video Testing**:
+   - `cmd.exe /c "gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug"`: `BUILD SUCCESSFUL in 27s`; **57/57** unit tests passed (`0` failures, `0` skipped, `0` errors across 11 XML suites).
+   - `zipalign.exe -c -P 16 -v 4 app-debug.apk`: exit code `0` (`Verification successful`); `llvm-objdump.exe -p` confirmed `align 2**14` on all `LOAD` segments in all four `arm64-v8a` `.so` libraries (`app-debug.apk`: `62,110,783` bytes).
+   - Assembled gitignored clips in `test_assets/`: `car_driving_ambient.mp4` (`720,969` bytes), `rain_ambient_non_media.mp4` (`361,069` bytes), `cbs_news_with_2005_commercial.mp4` (`1,186,184` bytes), and `multi_scenario_all_states.mp4` (`1,824,581` bytes).
+   - Emulator (`emulator-5554`) observed `NO MEDIA: AMBIENT` + `HOLD (NON-MEDIA)` on car (`car_driving_ambient.mp4`: 149/150 non-silent frames `< 0.04` ZCR) and rain (`rain_ambient_non_media.mp4`, with transient `zcr ~ 0.12` gusts briefly classifying as `PROGRAM` without `MUTE`), `MEDIA (100%)` + `PROGRAM (97%)` on CBS News, and `MEDIA (92%)` + `COMMERCIAL (99%)` + `TV MUTED [WEBHOOK]` on the 2005 commercial segment (`00:16 / 00:24`).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Recorded Step Count**: `2072` steps in transcript at entry logging
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Internet Archive (`archive.org`) audio/video clips processed via `ffmpeg.exe` 8.0 (`480x360`, 16 kHz mono AAC)
+  - Gradle / JDK 17 (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), `llvm-objdump.exe`, and `android` CLI (`screen capture`, `layout --no-idle`)
+  - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 
 

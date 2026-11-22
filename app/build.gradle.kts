@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.commercialkiller"
         minSdk = 24
         targetSdk = 36
-        versionCode = 13
-        versionName = "2.2.01"
+        versionCode = 14
+        versionName = "2.3"
     }
 
     buildTypes {

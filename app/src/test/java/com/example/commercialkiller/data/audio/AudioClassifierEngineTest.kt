@@ -1,4 +1,5 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.data.audio
 
 import org.junit.Assert.assertEquals
@@ -56,5 +57,41 @@ class AudioClassifierEngineTest {
         val topLabel = results[0].label
         assertTrue("Top label should indicate Commercial / Jingle or Music Bed, got: $topLabel",
             topLabel.contains("Commercial") || topLabel.contains("Music"))
+    }
+
+    @Test
+    fun `vehicle low frequency steady rumble is not classified as speech or commercial`() {
+        val sampleRate = 16000
+        val samples = FloatArray(sampleRate / 10) { i ->
+            val t = i.toDouble() / sampleRate
+            (0.08 * sin(2.0 * Math.PI * 60.0 * t) + 0.05 * sin(2.0 * Math.PI * 95.0 * t)).toFloat()
+        }
+
+        val scores = classifier.classifyByAcousticFeatures(samples)
+        assertTrue(scores.isNotEmpty())
+        val topLabel = scores.first().label
+        assertTrue(
+            "Expected vehicle/ambient label for steady low-freq rumble, got $topLabel",
+            topLabel.contains("Vehicle") || topLabel.contains("Rumble") || topLabel.contains("Ambient")
+        )
+    }
+
+    @Test
+    fun `stationary high frequency broadband ambient noise is not classified as speech or commercial`() {
+        val sampleRate = 16000
+        val samples = FloatArray(sampleRate / 10) { i ->
+            val t = i.toDouble() / sampleRate
+            (0.04 * sin(2.0 * Math.PI * 3100.0 * t) +
+                0.04 * sin(2.0 * Math.PI * 4300.0 * t) +
+                0.04 * sin(2.0 * Math.PI * 5700.0 * t)).toFloat()
+        }
+
+        val scores = classifier.classifyByAcousticFeatures(samples)
+        assertTrue(scores.isNotEmpty())
+        val topLabel = scores.first().label
+        assertTrue(
+            "Expected stationary ambient/noise label, got $topLabel",
+            topLabel.contains("Ambient") || topLabel.contains("Noise") || topLabel.contains("Rain")
+        )
     }
 }

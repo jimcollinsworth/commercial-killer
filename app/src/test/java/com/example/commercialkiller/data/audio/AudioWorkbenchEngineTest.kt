@@ -1,8 +1,10 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.data.audio
 
 import com.example.commercialkiller.data.decision.FrameDecision
+import com.example.commercialkiller.data.decision.FrameDecisionEngine
 import com.example.commercialkiller.data.decision.TvActionDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -141,5 +143,20 @@ class AudioWorkbenchEngineTest {
         assertEquals(0.93f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
         assertEquals(FrameDecision(), engine.state.value.frameDecision)
         engine.stop()
+    }
+
+    @Test
+    fun `setMediaThreshold updates state and clamps to engine range`() {
+        val engine = AudioWorkbenchEngine()
+        assertEquals(FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD, engine.state.value.mediaThreshold, 0.001f)
+
+        engine.setMediaThreshold(0.05f)
+        assertEquals(FrameDecisionEngine.MIN_MEDIA_THRESHOLD, engine.state.value.mediaThreshold, 0.001f)
+
+        engine.setMediaThreshold(0.99f)
+        assertEquals(FrameDecisionEngine.MAX_MEDIA_THRESHOLD, engine.state.value.mediaThreshold, 0.001f)
+
+        engine.setMediaThreshold(0.65f)
+        assertEquals(0.65f, engine.state.value.mediaThreshold, 0.001f)
     }
 }

@@ -1,8 +1,15 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.data.decision
 
 import com.example.commercialkiller.data.audio.ClassifierScore
 import kotlin.math.sqrt
+
+enum class MediaEnvironment {
+    BROADCAST_MEDIA,
+    SILENCE,
+    AMBIENT_NOISE
+}
 
 enum class TvActionDecision {
     MUTE,
@@ -10,7 +17,16 @@ enum class TvActionDecision {
     HOLD
 }
 
+data class MediaEvaluationResult(
+    val isMedia: Boolean,
+    val mediaScore: Float,
+    val mediaEnvironment: MediaEnvironment
+)
+
 data class FrameDecision(
+    val isMedia: Boolean = false,
+    val mediaScore: Float = 0f,
+    val mediaEnvironment: MediaEnvironment = MediaEnvironment.SILENCE,
     val isCommercial: Boolean = false,
     val commercialScore: Float = 0f,
     val isSameScene: Boolean = true,
@@ -33,27 +49,34 @@ data class CommercialEvaluationResult(
 )
 
 /**
- * Per-frame non-autoregressive decision model evaluating scene continuity via cosine similarity
- * and commercial probability from classifier tags, spectral compression density, shift distance,
- * and rolling scene-cut cadence.
+ * Per-frame non-autoregressive decision model evaluating:
+ * 0. Media presence (`is_media`: TV/radio broadcast vs. silence or car/ambient non-media noise),
+ * 1. Scene continuity (`is_same_scene` via cosine similarity and rolling 60 s cut cadence), and
+ * 2. Commercial probability (`is_commercial` gated by `is_media`) for TV mute/unmute actions.
  */
 class FrameDecisionEngine(
     initialSceneSimilarityThreshold: Float = DEFAULT_SCENE_SIMILARITY_THRESHOLD,
-    var commercialThreshold: Float = DEFAULT_COMMERCIAL_THRESHOLD
+    var commercialThreshold: Float = DEFAULT_COMMERCIAL_THRESHOLD,
+    initialMediaThreshold: Float = DEFAULT_MEDIA_THRESHOLD
 ) {
     companion object {
         const val MIN_SCENE_SIMILARITY_THRESHOLD = 0.50f
         const val MAX_SCENE_SIMILARITY_THRESHOLD = 0.99f
         const val DEFAULT_SCENE_SIMILARITY_THRESHOLD = 0.85f
+        const val MIN_MEDIA_THRESHOLD = 0.20f
+        const val MAX_MEDIA_THRESHOLD = 0.90f
+        const val DEFAULT_MEDIA_THRESHOLD = 0.50f
         const val DEFAULT_COMMERCIAL_THRESHOLD = 0.75f
         const val CUT_WINDOW_MS = 60_000L
         const val HIGH_CADENCE_CUTS_PER_MIN = 15f
+        const val NON_MEDIA_STREAK_RESET_FRAMES = 3
         const val MUTE_CONSECUTIVE_COMMERCIAL_FRAMES = 3
         const val UNMUTE_CONSECUTIVE_PROGRAM_FRAMES = 5
         private const val INITIAL_BUFFER_CAPACITY = 128
     }
 
     private var sceneSimilarityThreshold: Float = clampSimilarityThreshold(initialSceneSimilarityThreshold)
+    private var mediaThreshold: Float = clampMediaThreshold(initialMediaThreshold)
 
     // Pre-allocated frame buffer reused across 100 ms ticks to prevent per-frame heap allocations.
     private var previousFrameBuffer = FloatArray(INITIAL_BUFFER_CAPACITY)
@@ -65,8 +88,12 @@ class FrameDecisionEngine(
 
     private var consecutiveCommercialFrames = 0
     private var consecutiveProgramFrames = 0
+    private var consecutiveNonMediaFrames = 0
 
     // Internal scratch fields populated by in-place helpers to avoid intermediate object allocations.
+    private var lastIsMedia = false
+    private var lastMediaScore = 0f
+    private var lastMediaEnvironment = MediaEnvironment.SILENCE
     private var lastIsSameScene = true
     private var lastSceneSimilarity = 1.0f
     private var lastShotDurationMs = 0L
@@ -80,12 +107,42 @@ class FrameDecisionEngine(
 
     fun getSceneSimilarityThreshold(): Float = sceneSimilarityThreshold
 
+    fun setMediaThreshold(value: Float) {
+        mediaThreshold = clampMediaThreshold(value)
+    }
+
+    fun getMediaThreshold(): Float = mediaThreshold
+
     private fun clampSimilarityThreshold(value: Float): Float {
         return if (value.isNaN()) {
             DEFAULT_SCENE_SIMILARITY_THRESHOLD
         } else {
             value.coerceIn(MIN_SCENE_SIMILARITY_THRESHOLD, MAX_SCENE_SIMILARITY_THRESHOLD)
         }
+    }
+
+    private fun clampMediaThreshold(value: Float): Float {
+        return if (value.isNaN()) {
+            DEFAULT_MEDIA_THRESHOLD
+        } else {
+            value.coerceIn(MIN_MEDIA_THRESHOLD, MAX_MEDIA_THRESHOLD)
+        }
+    }
+
+    /**
+     * Query 0: First-gate check distinguishing TV/radio broadcast media from silence
+     * or non-media ambient environments (in-car engine rumble, rain, room fan noise).
+     */
+    fun evaluateMediaPresence(
+        features: FloatArray,
+        classifierTags: List<ClassifierScore>
+    ): MediaEvaluationResult {
+        evaluateMediaPresenceInternal(features, classifierTags)
+        return MediaEvaluationResult(
+            isMedia = lastIsMedia,
+            mediaScore = lastMediaScore,
+            mediaEnvironment = lastMediaEnvironment
+        )
     }
 
     /**
@@ -123,8 +180,8 @@ class FrameDecisionEngine(
     }
 
     /**
-     * Evaluates both scene continuity and commercial probability for a single 100 ms audio frame
-     * and computes the gated TV mute/unmute/hold decision.
+     * Evaluates media presence first (`is_media`), then scene continuity (`is_same_scene`),
+     * and finally gated commercial classification (`is_commercial`) and TV action decisions.
      */
     fun evaluateFrame(
         melEnergies: FloatArray,
@@ -133,25 +190,43 @@ class FrameDecisionEngine(
         timestampMs: Long
     ): FrameDecision {
         updateSceneContinuityInternal(melEnergies, timestampMs)
-        scoreCommercialInternal(melEnergies, classifierTags, shiftDistance, lastCutCadencePerMin)
+        evaluateMediaPresenceInternal(melEnergies, classifierTags)
 
-        if (lastIsCommercial) {
-            consecutiveCommercialFrames++
-            consecutiveProgramFrames = 0
+        val recommendedAction: TvActionDecision
+        if (!lastIsMedia) {
+            lastIsCommercial = false
+            lastCommercialScore = 0f
+            consecutiveNonMediaFrames++
+            if (consecutiveNonMediaFrames > NON_MEDIA_STREAK_RESET_FRAMES) {
+                consecutiveCommercialFrames = 0
+                consecutiveProgramFrames = 0
+            }
+            recommendedAction = TvActionDecision.HOLD
         } else {
-            consecutiveProgramFrames++
-            consecutiveCommercialFrames = 0
-        }
+            consecutiveNonMediaFrames = 0
+            scoreCommercialInternal(melEnergies, classifierTags, shiftDistance, lastCutCadencePerMin)
 
-        val recommendedAction = when {
-            lastIsCommercial && (!lastIsSameScene || consecutiveCommercialFrames >= MUTE_CONSECUTIVE_COMMERCIAL_FRAMES) ->
-                TvActionDecision.MUTE
-            !lastIsCommercial && consecutiveProgramFrames >= UNMUTE_CONSECUTIVE_PROGRAM_FRAMES ->
-                TvActionDecision.UNMUTE
-            else -> TvActionDecision.HOLD
+            if (lastIsCommercial) {
+                consecutiveCommercialFrames++
+                consecutiveProgramFrames = 0
+            } else {
+                consecutiveProgramFrames++
+                consecutiveCommercialFrames = 0
+            }
+
+            recommendedAction = when {
+                lastIsCommercial && (!lastIsSameScene || consecutiveCommercialFrames >= MUTE_CONSECUTIVE_COMMERCIAL_FRAMES) ->
+                    TvActionDecision.MUTE
+                !lastIsCommercial && consecutiveProgramFrames >= UNMUTE_CONSECUTIVE_PROGRAM_FRAMES ->
+                    TvActionDecision.UNMUTE
+                else -> TvActionDecision.HOLD
+            }
         }
 
         return FrameDecision(
+            isMedia = lastIsMedia,
+            mediaScore = lastMediaScore,
+            mediaEnvironment = lastMediaEnvironment,
             isCommercial = lastIsCommercial,
             commercialScore = lastCommercialScore,
             isSameScene = lastIsSameScene,
@@ -170,12 +245,143 @@ class FrameDecisionEngine(
         cutTimestampsMs.clear()
         consecutiveCommercialFrames = 0
         consecutiveProgramFrames = 0
+        consecutiveNonMediaFrames = 0
+        lastIsMedia = false
+        lastMediaScore = 0f
+        lastMediaEnvironment = MediaEnvironment.SILENCE
         lastIsSameScene = true
         lastSceneSimilarity = 1.0f
         lastShotDurationMs = 0L
         lastCutCadencePerMin = 0f
         lastIsCommercial = false
         lastCommercialScore = 0f
+    }
+
+    private fun evaluateMediaPresenceInternal(
+        features: FloatArray,
+        classifierTags: List<ClassifierScore>
+    ) {
+        var maxMediaTag = 0f
+        var maxNonMediaTag = 0f
+        var maxSilenceTag = 0f
+
+        for (i in classifierTags.indices) {
+            val tag = classifierTags[i]
+            val score = tag.score.coerceIn(0f, 1f)
+            val label = tag.label
+
+            if (label.contains("speech", ignoreCase = true) ||
+                label.contains("dialogue", ignoreCase = true) ||
+                label.contains("broadcast", ignoreCase = true) ||
+                label.contains("music", ignoreCase = true) ||
+                label.contains("commercial", ignoreCase = true) ||
+                label.contains("jingle", ignoreCase = true) ||
+                label.contains("singing", ignoreCase = true) ||
+                label.contains("voiceover", ignoreCase = true) ||
+                label.contains("radio", ignoreCase = true) ||
+                label.contains("television", ignoreCase = true) ||
+                label.contains("narration", ignoreCase = true) ||
+                label.contains("conversation", ignoreCase = true) ||
+                label.contains("advertisement", ignoreCase = true) ||
+                label.contains("promo", ignoreCase = true)
+            ) {
+                if (score > maxMediaTag) maxMediaTag = score
+            }
+            if (label.contains("vehicle", ignoreCase = true) ||
+                label.contains("car", ignoreCase = true) ||
+                label.contains("engine", ignoreCase = true) ||
+                label.contains("traffic", ignoreCase = true) ||
+                label.contains("rumble", ignoreCase = true) ||
+                label.contains("ambient /", ignoreCase = true) ||
+                label.contains("ambient noise", ignoreCase = true) ||
+                label.contains("non-media", ignoreCase = true) ||
+                label.contains("wind", ignoreCase = true) ||
+                label.contains("rain", ignoreCase = true) ||
+                label.contains("static", ignoreCase = true) ||
+                label.contains("fan", ignoreCase = true) ||
+                label.contains("hiss", ignoreCase = true) ||
+                label.contains("background noise", ignoreCase = true)
+            ) {
+                if (score > maxNonMediaTag) maxNonMediaTag = score
+            }
+            if (label.contains("silence", ignoreCase = true) ||
+                label.contains("quiet", ignoreCase = true)
+            ) {
+                if (score > maxSilenceTag) maxSilenceTag = score
+            }
+        }
+
+        if (features.isEmpty()) {
+            lastMediaScore = 0f
+            lastIsMedia = false
+            lastMediaEnvironment = MediaEnvironment.SILENCE
+            return
+        }
+
+        val bandCount = features.size
+        var totalEnergy = 0.0
+        val lowEnd = (bandCount * 15 / 100).coerceAtLeast(1)
+        val midStart = lowEnd.coerceAtMost(bandCount - 1)
+        val midEnd = (bandCount * 78 / 100).coerceAtLeast(midStart + 1).coerceAtMost(bandCount)
+
+        var lowSum = 0.0
+        var midSum = 0.0
+        var midMin = Float.MAX_VALUE
+        var midMax = 0f
+
+        for (i in 0 until bandCount) {
+            val e = features[i].coerceAtLeast(0f)
+            totalEnergy += e
+            if (i < lowEnd) {
+                lowSum += e
+            }
+            if (i in midStart until midEnd) {
+                midSum += e
+                if (e < midMin) midMin = e
+                if (e > midMax) midMax = e
+            }
+        }
+
+        val meanEnergy = (totalEnergy / bandCount.toDouble()).toFloat()
+        if (meanEnergy < 0.04f || maxSilenceTag >= 0.70f) {
+            lastMediaScore = if (maxSilenceTag >= 0.70f) {
+                (1f - maxSilenceTag).coerceIn(0f, 0.20f)
+            } else {
+                (meanEnergy / 0.04f * 0.25f).coerceIn(0f, 0.25f)
+            }
+            lastIsMedia = false
+            lastMediaEnvironment = MediaEnvironment.SILENCE
+            return
+        }
+
+        val lowMean = (lowSum / lowEnd.coerceAtLeast(1).toDouble()).toFloat()
+        val midLen = (midEnd - midStart).coerceAtLeast(1)
+        val midMean = (midSum / midLen.toDouble()).toFloat()
+        val safeMidMin = if (midMin == Float.MAX_VALUE) 0f else midMin
+        val midContrast = if (midMax > 1e-4f) ((midMax - safeMidMin) / (midMax + 1e-4f)).coerceIn(0f, 1f) else 0f
+
+        val lowDominanceRatio = lowMean / (midMean + 1e-4f)
+        val rumblePenalty = if (lowDominanceRatio > 2.2f) {
+            ((lowDominanceRatio - 2.2f) / 2.0f).coerceIn(0f, 1f) * 0.45f
+        } else {
+            0f
+        }
+        val flatNoisePenalty = if (maxMediaTag < 0.40f && midContrast < 0.25f) 0.30f else 0f
+
+        val rawMediaScore = (maxMediaTag * 0.55f) +
+            ((midMean / 0.35f).coerceIn(0f, 1f) * 0.30f) +
+            ((midContrast / 0.60f).coerceIn(0f, 1f) * 0.25f) -
+            (maxNonMediaTag * 0.55f) -
+            rumblePenalty -
+            flatNoisePenalty
+
+        lastMediaScore = rawMediaScore.coerceIn(0f, 1f)
+        lastIsMedia = lastMediaScore >= mediaThreshold
+        lastMediaEnvironment = if (lastIsMedia) {
+            MediaEnvironment.BROADCAST_MEDIA
+        } else {
+            MediaEnvironment.AMBIENT_NOISE
+        }
     }
 
     private fun updateSceneContinuityInternal(

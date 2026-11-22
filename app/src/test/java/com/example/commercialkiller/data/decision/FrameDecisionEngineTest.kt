@@ -1,4 +1,5 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.data.decision
 
 import com.example.commercialkiller.data.audio.ClassifierScore
@@ -280,14 +281,18 @@ class FrameDecisionEngineTest {
             engine.evaluateFrame(commercialVec, commercialTags(), 0f, 200L).recommendedAction
         )
 
-        // Interruption by non-commercial frame using identical spectrum -> resets streak
+        // Interruption by non-commercial broadcast dialogue frame using identical spectrum -> resets streak
         val nonCommercial = engine.evaluateFrame(
             melEnergies = commercialVec,
-            classifierTags = silenceTags(),
+            classifierTags = speechTags(),
             shiftDistance = 0f,
             timestampMs = 300L
         )
-        // With silenceTags (0.95 -> -0.38 penalty) vs uniformVec: wait, use quiet vector to guarantee non-commercial
+        assertFalse(nonCommercial.isCommercial)
+        assertEquals(TvActionDecision.HOLD, nonCommercial.recommendedAction)
+        assertTrue(nonCommercial.commercialScore < 0.75f)
+
+        // Interruption by brief quiet gap preserves reset state -> requires 3 frames again
         val resetCheck = engine.evaluateFrame(
             melEnergies = FloatArray(80) { 0f },
             classifierTags = silenceTags(),
@@ -301,8 +306,6 @@ class FrameDecisionEngineTest {
         val afterInterrupt = engine.evaluateFrame(commercialVec, commercialTags(), 0f, 400L)
         assertTrue(afterInterrupt.isCommercial)
         assertEquals(TvActionDecision.HOLD, afterInterrupt.recommendedAction)
-        // Confirm silenceTags score was lower even before zero-norm
-        assertTrue(nonCommercial.commercialScore < 0.75f)
     }
 
     @Test
@@ -345,6 +348,93 @@ class FrameDecisionEngineTest {
         assertEquals(1.0f, postReset.sceneSimilarity, 0.001f)
         assertEquals(0L, postReset.shotDurationMs)
         assertEquals(0f, postReset.cutCadencePerMin, 0.001f)
+        assertEquals(TvActionDecision.HOLD, postReset.recommendedAction)
+    }
+
+    @Test
+    fun `media threshold clamps strictly within supported bounds`() {
+        val engine = FrameDecisionEngine()
+        assertEquals(FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD, engine.getMediaThreshold(), 0.001f)
+
+        engine.setMediaThreshold(0.05f)
+        assertEquals(FrameDecisionEngine.MIN_MEDIA_THRESHOLD, engine.getMediaThreshold(), 0.001f)
+
+        engine.setMediaThreshold(0.99f)
+        assertEquals(FrameDecisionEngine.MAX_MEDIA_THRESHOLD, engine.getMediaThreshold(), 0.001f)
+
+        engine.setMediaThreshold(0.62f)
+        assertEquals(0.62f, engine.getMediaThreshold(), 0.001f)
+    }
+
+    @Test
+    fun `silence and ambient noise gate to non-media hold without commercial flag`() {
+        val engine = FrameDecisionEngine()
+        val silenceFeatures = FloatArray(80) { 0f }
+        val silenceDecision = engine.evaluateFrame(
+            melEnergies = silenceFeatures,
+            classifierTags = listOf(ClassifierScore("Silence / Quiet Room", 0.90f)),
+            shiftDistance = 0f,
+            timestampMs = 100L
+        )
+        assertFalse(silenceDecision.isMedia)
+        assertEquals(MediaEnvironment.SILENCE, silenceDecision.mediaEnvironment)
+        assertFalse(silenceDecision.isCommercial)
+        assertEquals(0f, silenceDecision.commercialScore, 0.001f)
+        assertEquals(TvActionDecision.HOLD, silenceDecision.recommendedAction)
+
+        // Low-frequency steady engine rumble profile with ambient tag
+        val carFeatures = FloatArray(80) { i -> if (i < 12) 0.50f else 0.05f }
+        val carDecision = engine.evaluateFrame(
+            melEnergies = carFeatures,
+            classifierTags = listOf(ClassifierScore("Vehicle / Engine Rumble", 0.78f)),
+            shiftDistance = 0.01f,
+            timestampMs = 200L
+        )
+        assertFalse(carDecision.isMedia)
+        assertEquals(MediaEnvironment.AMBIENT_NOISE, carDecision.mediaEnvironment)
+        assertFalse(carDecision.isCommercial)
+        assertEquals(0f, carDecision.commercialScore, 0.001f)
+        assertEquals(TvActionDecision.HOLD, carDecision.recommendedAction)
+    }
+
+    @Test
+    fun `broadcast speech and commercial classify as media and gate after consecutive non-media reset`() {
+        val engine = FrameDecisionEngine()
+        val mediaFeatures = FloatArray(80) { i -> if (i in 8..38) 0.65f else 0.25f }
+        val speechTags = listOf(ClassifierScore("Dialogue / Program Speech", 0.85f))
+
+        val programDecision = engine.evaluateFrame(
+            melEnergies = mediaFeatures,
+            classifierTags = speechTags,
+            shiftDistance = 0.04f,
+            timestampMs = 100L
+        )
+        assertTrue(programDecision.isMedia)
+        assertEquals(MediaEnvironment.BROADCAST_MEDIA, programDecision.mediaEnvironment)
+
+        // Two commercial media frames accumulate toward the 3-frame MUTE threshold
+        val commercialTags = listOf(
+            ClassifierScore("Commercial / Ad Jingle", 0.90f),
+            ClassifierScore("Music / Jingle", 0.55f)
+        )
+        val c1 = engine.evaluateFrame(mediaFeatures, commercialTags, 0.05f, 200L)
+        val c2 = engine.evaluateFrame(mediaFeatures, commercialTags, 0.02f, 300L)
+        assertTrue(c1.isMedia && c1.isCommercial)
+        assertTrue(c2.isMedia && c2.isCommercial)
+        assertEquals(TvActionDecision.HOLD, c2.recommendedAction)
+
+        // 4 consecutive silence frames (> NON_MEDIA_STREAK_RESET_FRAMES=3) reset commercial streak
+        val silenceFeatures = FloatArray(80) { 0f }
+        val silenceTags = listOf(ClassifierScore("Silence / Quiet Room", 0.95f))
+        for (tick in 1..4) {
+            val nonMedia = engine.evaluateFrame(silenceFeatures, silenceTags, 0f, 300L + tick * 100L)
+            assertFalse(nonMedia.isMedia)
+            assertEquals(TvActionDecision.HOLD, nonMedia.recommendedAction)
+        }
+
+        // Next commercial media frame (same vector, high similarity) restarts streak at 1 -> HOLD
+        val postReset = engine.evaluateFrame(mediaFeatures, commercialTags, 0.02f, 800L)
+        assertTrue(postReset.isMedia)
         assertEquals(TvActionDecision.HOLD, postReset.recommendedAction)
     }
 }
