@@ -6,21 +6,70 @@ Commercial Killer is an **on-device experimentation workbench** for audio and vi
 
 ## Technical Proposal: Significance Determination Alternatives
 
-When comparing sequential Mel-spectrogram frames (calculated at a configurable 100 ms interval), we evaluate two primary approaches to determine whether a change is "significant" enough to trigger an event:
+When comparing sequential Mel-spectrogram frames (calculated at a configurable 100 ms interval), two non-generative approaches evaluate whether an audio or scene transition requires action:
 
-### Alternative A: Matrix Distance Metric (Lightweight / Low Energy)
-- **Algorithm**: Compute Mean Squared Error (MSE), Fréchet Distance, or Cosine Distance between consecutive Mel-spectrogram frequency bin vectors $S_t$ and $S_{t-1}$.
-- **Pros**: Extremely fast ($< 1\text{ ms}$ on CPU/DSP), minimal battery consumption, deterministic thresholding ($\Delta > \tau$).
-- **Cons**: Sensitive to abrupt background noise or volume shifts without semantic understanding.
+### Alternative A: 1D Matrix Distance Metric (`SpectrogramComparator`)
+- **Algorithm**: Compute Mean Squared Error (MSE), Euclidean Distance, or Cosine Distance between consecutive Mel-spectrogram frequency bin vectors $S_t$ and $S_{t-1}$.
+- **Characteristics**: Sub-millisecond execution ($< 1\text{ ms}$ on CPU/DSP), single scalar distance output ($\Delta$), deterministic thresholding ($\Delta > \tau$).
+- **Limitations**: Measures raw spectral magnitude change without distinguishing commercial compression from speech volume shifts or tracking shot cadence over time.
 
-### Alternative B: Local Multimodal LLM Evaluation (Semantic Context)
-- **Algorithm**: Pass consecutive spectrogram image frames or feature embeddings to an on-device local multimodal model (e.g. Gemini Nano via AICore / LiteRT-ML).
-- **Prompt**: *"Compare the audio/video spectrogram at $t_{-1}$ and $t_0$. Has the broadcast transitioned from primary content to a commercial break?"*
-- **Pros**: High semantic accuracy, contextual awareness of commercial transitions, immune to simple volume spikes.
-- **Cons**: Higher latency and NPU/GPU compute requirements per 100 ms frame.
+### Alternative B: Fast Local Android Decision Model (`FrameDecisionEngine`, Non-Autoregressive System 1 Evaluator)
+- **Algorithm**: Combine parallel on-device LiteRT / MediaPipe audio classification (`AudioClassifierEngine`) with deterministic, non-autoregressive per-frame decision queries in `FrameDecisionEngine` running on every 100 ms frame.
+- **Characteristics**: Zero autoregressive token generation, sub-millisecond per-frame vector scoring, multi-factor fusion (classifier tags, spectral energy compression/variance, shift distance, and rolling shot-cut cadence), and hysteresis-gated `MUTE` / `UNMUTE` / `HOLD` outputs.
+- **Limitations**: Relies on acoustic/spectrogram features and classifier tag coverage until video-frame ROI caching is integrated for muted-TV unmute detection.
 
-### Hybrid Architecture (Recommended)
-Use **Alternative A** as a fast first-stage filter. When matrix distance $\Delta$ exceeds threshold $\tau_{\text{trigger}}$, invoke **Alternative B** (local multimodal LLM) to confirm the commercial transition event.
+### Comparison: 1D Matrix Distance vs. On-Device Fast Decision Model
+
+| Dimension | 1D Matrix Distance (`SpectrogramComparator`) | On-Device Fast Decision Model (LiteRT / MediaPipe + `FrameDecisionEngine`) |
+| --- | --- | --- |
+| **Inference Type** | Single-frame vector distance | Non-autoregressive discriminative System 1 evaluator |
+| **Execution Interval** | 100 ms (configurable) | 100 ms per-frame evaluation |
+| **Primary Inputs** | Current & previous Mel vectors ($S_t, S_{t-1}$) | Mel vector $\vec{F}_t$, `List<ClassifierScore>`, shift distance $\Delta$, cut cadence |
+| **Structured Outputs** | Scalar shift distance ($\Delta$) | `is_commercial` score/flag, `is_same_scene` cosine similarity, `shotDurationMs`, `cutCadencePerMin`, `TvActionDecision` |
+| **Memory Allocation** | Scalar accumulator | Pre-allocated `previousFrame` `FloatArray` buffer + bounded 60,000 ms `ArrayDeque<Long>` |
+| **Action Gating** | Single threshold crossing ($\Delta > \tau$) | Frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
+
+In `v2.2`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_same_scene` and `is_commercial` to drive `TvControlManager`.
+
+---
+
+## Fast Local Android Decision Model Architecture
+
+The v2.2 Fast Local Android Decision Model (`com.example.commercialkiller.data.decision.FrameDecisionEngine`) replaces autoregressive prompt-based evaluation with a deterministic, non-autoregressive System 1 frame evaluator running directly on Android hardware every 100 ms.
+
+### 1. Per-Frame Structured Queries (100 ms Cadence)
+
+Every 100 ms analysis tick produces a `FrameDecision` record by executing two structured queries:
+
+1. **`is_same_scene` (`evaluateSceneContinuity`)**:
+   - Computes the cosine similarity between consecutive Mel-spectrogram feature vectors $\vec{F}_t$ (current frame) and $\vec{F}_{t-1}$ (pre-allocated previous frame buffer) across $B$ Mel bands (40–128 bands, default 80):
+     $$\text{similarity}(\vec{F}_t, \vec{F}_{t-1}) = \frac{\vec{F}_t \cdot \vec{F}_{t-1}}{\|\vec{F}_t\| \, \|\vec{F}_{t-1}\|} = \frac{\sum_{i=1}^{B} F_{t,i} \, F_{t-1,i}}{\sqrt{\sum_{i=1}^{B} F_{t,i}^2} \sqrt{\sum_{i=1}^{B} F_{t-1,i}^2}}$$
+   - **Boundary Handling**: On the first frame, when either vector norm is zero, or when the configured Mel band count $B$ changes, `similarity = 1.0f` and `isSameScene = true` (initializing `currentShotStartMs = timestampMs`).
+   - **Scene Cut Detection & Cadence Tracking**:
+     - `isSameScene = similarity >= sceneSimilarityThreshold` (default `0.85f`, engine range `0.50f..0.99f`, UI settings slider `0.50f..0.98f`).
+     - When `!isSameScene` (scene cut), `timestampMs` is appended to `cutTimestampsMs` (`ArrayDeque<Long>`) and `currentShotStartMs` resets to `timestampMs`.
+     - Timestamps older than `timestampMs - 60_000L` are pruned on every frame to maintain a rolling 60,000 ms window.
+     - Emits `shotDurationMs = (timestampMs - currentShotStartMs).coerceAtLeast(0L)` and `cutCadencePerMin = cutTimestampsMs.size.toFloat()`.
+   - **Hot-Loop Allocation Avoidance**: Copies `currentFeatures` into a reused `previousFrame` `FloatArray` in place without per-frame heap allocation.
+
+2. **`is_commercial` (`evaluateCommercial`)**:
+   - Evaluates a bounded discriminative commercial likelihood score (`commercialScore` clamped to `0.0f..1.0f`) by combining three signal groups:
+     - **Classifier Tag Probabilities**: Weighted sum over parallel LiteRT / MediaPipe `List<ClassifierScore>` tags, applying positive weights for commercial, jingle, music, singing, and advertisement classes and offsetting weights for program speech, dialogue, and silence classes.
+     - **Spectral Compression & Loudness Density**: Evaluates elevated mean Mel energy, low band-to-band variance (full-spectrum dynamic range compression), and the 1D frame transition `shiftDistance`.
+     - **Rolling Cut Cadence Boost**: Adds positive commercial weight when `cutCadencePerMin >= 15f` cuts/min.
+   - Outputs `isCommercial = commercialScore >= commercialThreshold` (default `0.75f`).
+
+### 2. Telemetry & Action Gating (`TvActionDecision`)
+
+`FrameDecisionEngine.evaluateFrame(...)` tracks consecutive state counters (`consecutiveCommercialFrames` and `consecutiveProgramFrames`) to emit `TvActionDecision`:
+- **`TvActionDecision.MUTE`**: Triggered when `isCommercial && (!isSameScene || consecutiveCommercialFrames >= 3)` (requires either a simultaneous scene cut or 3 consecutive commercial frames, >= 300 ms at 100 ms cadence).
+- **`TvActionDecision.UNMUTE`**: Triggered when `!isCommercial && consecutiveProgramFrames >= 5` (5 consecutive non-commercial program frames, >= 500 ms hysteresis).
+- **`TvActionDecision.HOLD`**: Emitted on all intermediate frames to prevent chattering across transient spikes.
+
+### 3. UI Telemetry & Settings Integration
+
+- **`FrameDecisionBar` (`MainScreen.kt`)**: Displays color-coded status badges underneath `SpectrogramWaterfallCard`: `COMMERCIAL (<score>%)` / `PROGRAM (<score>%)`, `SAME SCENE (<sim>)` / `SCENE CUT (<sim>)`, and monospace shot telemetry (`Shot: <X.X>s | <N> cuts/min`).
+- **Threshold Control (`SpectrogramSettingsSheet`)**: Exposes the `Scene Cut Similarity Threshold` slider (`0.50f..0.98f`) bound to `AudioWorkbenchEngine.setSceneSimilarityThreshold(value)`.
 
 ---
 
@@ -47,8 +96,8 @@ For benchmarking commercial detection on real broadcast media, public domain and
 1. **Native Framework Integration**:
    - LiteRT-ML (TFLite) & MediaPipe tasks (Audio & Video)
    - Open-weights Hugging Face models (YAMNet, Audio Spectrogram Transformer / AST, Wav2Vec2)
-   - AICore / Gemini Nano Prompt API
-   - Local GGUF / ONNX models via NNAPI
+   - Fast Local Android Decision Model (`FrameDecisionEngine`) executing non-autoregressive 100 ms per-frame queries
+   - Local ONNX / LiteRT classification models via NNAPI
 2. **Multi-Input Stream Workbench**:
    - Camera & Microphone live capture
    - Local audio file decoding (`MediaExtractor` / `MediaCodec` for WAV, MP3, AAC, M4A, FLAC, OGG, OPUS)
@@ -64,14 +113,14 @@ For benchmarking commercial detection on real broadcast media, public domain and
 
 ## Technical Proposal: ADK for Kotlin 1.0 Agent Integration
 
-Integration of Google's **Agent Development Kit (ADK) for Kotlin 1.0** to provide autonomous action dispatching and bidirectional agentic communication:
+Integration of Google's **Agent Development Kit (ADK) for Kotlin 1.0** to provide deterministic action dispatching and bidirectional state machine communication:
 
 1. **Architecture & Scope**:
    - Utilize KMP-ready ADK Kotlin core with `InMemoryRunner` for on-device agent state machine management.
    - Define structured action tools in Kotlin: `MuteAudioAction`, `UnmuteAudioAction`, `SendIrCommandAction`, and `TriggerTvWebhookAction`.
-2. **LLM Orchestration**:
-   - Couple local Gemini Nano / LiteRT-LM model with ADK tool calling capabilities.
-   - When a commercial transition event is flagged by the spectrogram comparator, the ADK agent receives the event payload, determines intent, and dispatches hardware/network actions.
+2. **Deterministic Decision Action Routing**:
+   - Route structured `FrameDecision` payloads (`isCommercial`, `isSameScene`, `shotDurationMs`, `cutCadencePerMin`, `recommendedAction`) from `FrameDecisionEngine` directly into ADK Kotlin state transitions.
+   - Execute hardware IR and TV webhook action tools without autoregressive token orchestration.
 
 ---
 
@@ -140,15 +189,14 @@ By converting the Mel-spectrogram buffer into a standardized 2D image bitmap (e.
 [2D Bitmap / Tensor Generation (e.g., 224x224x3)]
        │
        ├───► [Approach 1: LiteRT Vision Embedder] ───► Cosine Similarity between Img(t) & Img(t-1)
-       ├───► [Approach 2: Dual-Input Siamese CNN] ───► Transition Probability Score
-       └───► [Approach 3: Local Gemini Nano Multimodal] ──► Semantic Boundary Evaluation
+       └───► [Approach 2: Dual-Input Siamese CNN] ───► Transition Probability Score
 ```
 
 ---
 
 ### 3. Evaluated Vision Architectures
 
-#### Option A: Lightweight On-Device Vision Embedder (MediaPipe / LiteRT MobileNetV4)
+#### Option A: On-Device Vision Embedder (MediaPipe / LiteRT MobileNetV4)
 - **Mechanism**: Passes 2D spectrogram image through a pretrained visual embedding network to generate a 512-dimensional visual feature embedding vector $\vec{v}_t$.
 - **Comparison**: Computes Cosine Distance between consecutive embedding vectors:
   $$D_{\text{visual}}(t, t-1) = 1 - \frac{\vec{v}_t \cdot \vec{v}_{t-1}}{\|\vec{v}_t\| \|\vec{v}_{t-1}\|}$$
@@ -156,12 +204,7 @@ By converting the Mel-spectrogram buffer into a standardized 2D image bitmap (e.
 
 #### Option B: Siamese Spectrogram Comparator CNN
 - **Mechanism**: A dedicated two-branch convolutional network that accepts both spectrogram image patch $I_{t-1}$ (program baseline) and $I_t$ (candidate window), outputting a binary transition classification score $P(\text{commercial\_break})$.
-- **Advantage**: Specifically trained on time-frequency spectrogram textures to ignore random mic noise while detecting commercial mastering characteristics.
-
-#### Option C: Local Multimodal Vision LLM (Gemini Nano / AICore Image API)
-- **Mechanism**: Renders consecutive spectrogram tiles side-by-side and submits the image directly to on-device Gemini Nano with multimodal prompt:
-  *"Analyze these two consecutive audio spectrogram images. Has the broadcast transitioned from primary content into a commercial advertisement block?"*
-- **Advantage**: Full semantic explanation and high boundary precision; ideal as a second-stage confirmation filter.
+- **Mechanism Details**: Trained on time-frequency spectrogram textures to separate ambient mic noise from full-spectrum commercial mastering profiles.
 
 ---
 
@@ -243,5 +286,5 @@ By combining the **Camera Video Stream** with **Audio Mel-Spectrogram Tracking**
   - Tie transition detection to automatic `TvControlManager.sendMute()` and return detection to `TvControlManager.sendUnmute()`.
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
 

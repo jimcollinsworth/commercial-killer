@@ -1,6 +1,9 @@
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
 package com.example.commercialkiller.data.audio
 
+import com.example.commercialkiller.data.decision.FrameDecision
+import com.example.commercialkiller.data.decision.TvActionDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -17,6 +20,9 @@ class AudioWorkbenchEngineTest {
         assertEquals(0.05f, state.threshold, 0.001f)
         assertEquals(100L, state.intervalMs)
         assertEquals(AudioSourceMode.SYNTH, state.sourceMode)
+        assertEquals(0.85f, state.sceneSimilarityThreshold, 0.0001f)
+        assertEquals(FrameDecision(), state.frameDecision)
+        assertEquals(TvActionDecision.HOLD, state.frameDecision.recommendedAction)
     }
 
     @Test
@@ -97,6 +103,43 @@ class AudioWorkbenchEngineTest {
         engine.start(AudioSourceMode.MIC)
         assertFalse(engine.state.value.isVideo)
         assertEquals(AudioSourceMode.MIC, engine.state.value.sourceMode)
+        engine.stop()
+    }
+
+    @Test
+    fun setSceneSimilarityThreshold_updatesStateAndClampsLimits() {
+        val engine = AudioWorkbenchEngine()
+
+        // Valid threshold within 0.50..0.99
+        engine.setSceneSimilarityThreshold(0.91f)
+        assertEquals(0.91f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+
+        // Lower bound clamp (min 0.50)
+        engine.setSceneSimilarityThreshold(0.15f)
+        assertEquals(0.50f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+
+        // Upper bound clamp (max 0.99)
+        engine.setSceneSimilarityThreshold(1.50f)
+        assertEquals(0.99f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+
+        // NaN fallback to default 0.85
+        engine.setSceneSimilarityThreshold(Float.NaN)
+        assertEquals(0.85f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+    }
+
+    @Test
+    fun start_preservesSceneSimilarityThresholdAndResetsFrameDecision() {
+        val engine = AudioWorkbenchEngine()
+        engine.setSceneSimilarityThreshold(0.93f)
+
+        engine.start(AudioSourceMode.SYNTH)
+        assertEquals(0.93f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+        assertEquals(FrameDecision(), engine.state.value.frameDecision)
+        engine.stop()
+
+        engine.start(AudioSourceMode.MIC)
+        assertEquals(0.93f, engine.state.value.sceneSimilarityThreshold, 0.0001f)
+        assertEquals(FrameDecision(), engine.state.value.frameDecision)
         engine.stop()
     }
 }

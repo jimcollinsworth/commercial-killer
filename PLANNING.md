@@ -3,13 +3,13 @@
 ## Incremental Step 1: Mel-Spectrogram & Significance Event Trigger (Current)
 
 - [x] Establish project baseline & governance files (`AGENTS.md`, `README.md`, `PLANNING.md`, `ROADMAP.md`, `JOURNAL.md`)
-- [x] Register 7 Android CLI skills (`adaptive`, `camerax`, `edge-to-edge`, `ml-kit-genai-prompt-api`, `testing-setup`, `android-profiler`, `android-cli`)
+- [x] Register 7 Android CLI skills (`adaptive`, `camerax`, `edge-to-edge`, `ml-kit-genai-prompt-api`, `testing-setup`, `android-profiler`, `android-cli`) *(Note: `ml-kit-genai-prompt-api` dropped/superseded in v2.2)*
 - [x] Configure token & resource usage logging rule (Rule 19) in `AGENTS.md` and `JOURNAL.md`
 - [x] Verify Gradle debug build (`assembleDebug` - SUCCESS)
 - [x] Deploy to emulator `Medium_Phone_API_36.1` and capture baseline UI screenshot
 - [x] Add Audio Recording & Mel-Spectrogram calculation engine (100 ms configurable interval)
 - [x] Add Spectrogram matrix distance comparison (Euclidean / Cosine / MSE) for significance thresholding
-- [x] Implement local Multimodal LLM evaluator fallback (`AiAnalysisViewModel`)
+- [x] ~~Implement local Multimodal LLM evaluator fallback (`AiAnalysisViewModel`)~~ *(Deleted and superseded in v2.2 by `FrameDecisionEngine`)*
 - [x] Add real-time visual Mel-spectrogram rendering & event log overlay in Compose UI
 - [x] Implement automated unit test suite (`MelSpectrogramTest.kt`, `SpectrogramComparatorTest.kt`)
 - [x] Deploy and capture live emulator verification screenshots
@@ -50,6 +50,11 @@
 - [x] Immediate waterfall frequency grid rescaling on band resolution changes in SpectrogramWaterfall (v2.1.00.01)
 - [x] Non-allocating `AudioSourceMode.entries` in Compose loop and bounded 38dp header action touch targets (v2.1.00.01)
 - [x] Comprehensive unit tests for AudioWorkbenchEngine state mutations, clamping, and mode switches (v2.1.00.01)
+- [x] Fast Local Android Decision Model (`FrameDecisionEngine`) executing non-autoregressive 100 ms per-frame `is_commercial` and `is_same_scene` queries with cosine similarity cut cadence tracking and `MUTE`/`UNMUTE`/`HOLD` action gating (v2.2)
+- [x] Deletion of `AiAnalysisViewModel.kt` and removal of all generative LLM / Gemini Nano Prompt API proposals across codebase and documentation (v2.2)
+- [x] `FrameDecisionBar` HUD badges in `MainScreen.kt` (COMMERCIAL/PROGRAM score, SAME SCENE/SCENE CUT cosine similarity, and Shot duration / cuts per minute telemetry) across compact and expanded two-pane layouts (v2.2)
+- [x] Scene Cut Similarity Threshold slider (`0.50f..0.98f`) in `SpectrogramSettingsSheet` wired to `AudioWorkbenchEngine.setSceneSimilarityThreshold` (v2.2)
+- [x] Automated unit tests covering `is_commercial`, `is_same_scene`, scene cuts, shot duration, rolling cut cadence pruning, threshold clamping, `MUTE`/`UNMUTE`/`HOLD` gating, and `AudioWorkbenchEngine.setSceneSimilarityThreshold` (`FrameDecisionEngineTest.kt` and `AudioWorkbenchEngineTest.kt`) (v2.2)
 - [ ] Cross-Modal Audio-Visual Fingerprint Caching (Learn and snapshot pre-break program signature [Mel-spectrogram + camera frame palette & station bug] prior to muting, enabling high-confidence visual recognition of program return to trigger unmute)
 - [ ] Vision-Based Spectrogram Image Comparison & Evaluation (Convert Mel-spectrograms to 2D image tensors/bitmaps and evaluate transitions using an on-device vision/image model)
 - [ ] IR signal acquisition & calibration interface (receiving raw IR signals for training and user corrections)
@@ -58,4 +63,4 @@
 - [ ] Game-Style HUD & POV UI redesign (deferred for future iteration)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*

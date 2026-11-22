@@ -1,4 +1,5 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Argon.
 package com.example.commercialkiller.ui.main
 
 import android.Manifest
@@ -72,6 +73,7 @@ import com.example.commercialkiller.data.audio.AudioSourceMode
 import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
 import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.data.audio.WorkbenchEvent
+import com.example.commercialkiller.data.decision.FrameDecision
 import com.example.commercialkiller.ui.components.AudioFileIcon
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.HelpIcon
@@ -137,9 +139,11 @@ fun MainScreen(
             intervalMs = state.intervalMs,
             threshold = state.threshold,
             numMelBands = state.numMelBands,
+            sceneSimilarityThreshold = state.sceneSimilarityThreshold,
             onIntervalChanged = { engine.setInterval(it) },
             onThresholdChanged = { engine.setThreshold(it) },
             onMelBandsChanged = { engine.setMelBands(it) },
+            onSceneSimilarityThresholdChanged = { engine.setSceneSimilarityThreshold(it) },
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -223,6 +227,11 @@ fun MainScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(360.dp)
+                        )
+
+                        FrameDecisionBar(
+                            decision = state.frameDecision,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
 
@@ -330,6 +339,11 @@ fun MainScreen(
                             .height(spectrogramHeight)
                     )
 
+                    FrameDecisionBar(
+                        decision = state.frameDecision,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     // 3. Features and labeling underneath that
                     ClassifierLabelsContent(scores = state.classifierScores)
 
@@ -433,6 +447,88 @@ private fun SpectrogramWaterfallCard(
                 history = history,
                 numMelBands = numMelBands,
                 modifier = modifier
+            )
+        }
+    }
+}
+
+private val DecisionBarShape = RoundedCornerShape(10.dp)
+private val DecisionBadgeShape = RoundedCornerShape(6.dp)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FrameDecisionBar(
+    decision: FrameDecision,
+    modifier: Modifier = Modifier
+) {
+    val commercialBg = if (decision.isCommercial) Color(0xFFDC2626) else Color(0xFF16A34A)
+    val commercialText = if (decision.isCommercial) {
+        "COMMERCIAL (%.0f%%)".format(decision.commercialScore * 100f)
+    } else {
+        "PROGRAM (%.0f%%)".format((1f - decision.commercialScore) * 100f)
+    }
+
+    val sceneBg = if (decision.isSameScene) Color(0xFF0284C7) else Color(0xFFD97706)
+    val sceneText = if (decision.isSameScene) {
+        "SAME SCENE (%.2f)".format(decision.sceneSimilarity)
+    } else {
+        "SCENE CUT (%.2f)".format(decision.sceneSimilarity)
+    }
+
+    val telemetryText = "Shot: %.1fs | %.0f cuts/min".format(
+        decision.shotDurationMs / 1000f,
+        decision.cutCadencePerMin
+    )
+
+    Surface(
+        modifier = modifier,
+        color = Color(0xFF1E293B),
+        shape = DecisionBarShape
+    ) {
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .background(commercialBg, DecisionBadgeShape)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = commercialText,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .background(sceneBg, DecisionBadgeShape)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = sceneText,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            Text(
+                text = telemetryText,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                modifier = Modifier.align(Alignment.CenterVertically)
             )
         }
     }
@@ -896,8 +992,8 @@ private fun FilePlaybackCard(
 
 /**
  * Spectrogram & Analysis Settings Panel:
- * Controls the significance threshold (τ), analysis interval, Mel filterbank bands,
- * and classifier visibility parameters without consuming permanent main-screen space.
+ * Controls the significance threshold (τ), cosine similarity scene-cut threshold, analysis interval,
+ * Mel filterbank bands, and classifier visibility parameters without consuming permanent main-screen space.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -905,9 +1001,11 @@ private fun SpectrogramSettingsSheet(
     intervalMs: Long,
     threshold: Float,
     numMelBands: Int,
+    sceneSimilarityThreshold: Float,
     onIntervalChanged: (Long) -> Unit,
     onThresholdChanged: (Float) -> Unit,
     onMelBandsChanged: (Int) -> Unit,
+    onSceneSimilarityThresholdChanged: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -919,7 +1017,8 @@ private fun SpectrogramSettingsSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .imePadding(),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(
@@ -971,6 +1070,41 @@ private fun SpectrogramSettingsSheet(
                     value = threshold,
                     onValueChange = onThresholdChanged,
                     valueRange = 0.01f..0.30f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF38BDF8),
+                        activeTrackColor = Color(0xFF0284C7)
+                    )
+                )
+            }
+
+            // Scene Cut Similarity Threshold Slider
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Scene Cut Similarity Threshold",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.LightGray
+                    )
+                    Text(
+                        text = "%.2f".format(sceneSimilarityThreshold),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF38BDF8)
+                    )
+                }
+                Text(
+                    text = "Cosine similarity floor between consecutive spectrogram frames; drops below this value trigger a scene cut",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp
+                )
+                Slider(
+                    value = sceneSimilarityThreshold.coerceIn(0.50f, 0.98f),
+                    onValueChange = onSceneSimilarityThresholdChanged,
+                    valueRange = 0.50f..0.98f,
                     colors = SliderDefaults.colors(
                         thumbColor = Color(0xFF38BDF8),
                         activeTrackColor = Color(0xFF0284C7)

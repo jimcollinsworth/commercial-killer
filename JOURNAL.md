@@ -774,7 +774,84 @@
   - Git branch tracking (`feature/spectrogram-video-ui-redesign`)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.*
+
+## 2026-09-24: Release v2.1: Production Merge & GitHub Deployment
+
+> [!NOTE] User Instructions & Guidance:
+> - User explicitly instructed: "Merge and deploy to GitHub release".
+> - User addressed terminal runner constraints: "continually have a problem running PowerShell against my explicit commands in the agent's file. It would be nice to stop this, as I don't want it and it seems to cause lots of problems with quoting."
+
+### Solution & Standard Procedure
+1. **Branch Merge & Fast-Forward**:
+   - Merged `feature/spectrogram-video-ui-redesign` into `main` with `--no-ff` (commit `f7c72da`).
+   - Tagged release as `v2.1`.
+   - Pushed `main` and tag `v2.1` to remote repository `https://github.com/jimcollinsworth/commercial-killer.git`.
+2. **GitHub Release Publication**:
+   - Created and published GitHub Release `v2.1` with `app-debug.apk` attached using `C:\Users\jimco\bin\gh.exe release create v2.1 app-debug.apk --title "v2.1 UI Spectrogram Focus and Video Playback" --notes-file release_notes_v2_1.md`.
+   - Release URL: `https://github.com/jimcollinsworth/commercial-killer/releases/tag/v2.1`.
+3. **PowerShell Quoting Root Cause & Permanent Fix**:
+   - **Root Cause**: The IDE's default Windows terminal profile was unconfigured in `C:\Users\jimco\AppData\Roaming\Antigravity IDE\User\settings.json`, causing it to discover and launch `Visual Studio 2022 Developer PowerShell` as the host subshell. PowerShell strips quotes and intercepts `&` and `|` operators prior to executing child commands.
+   - **Remediation**: Set `"terminal.integrated.defaultProfile.windows": "Command Prompt"` in the user's IDE configuration so all subshells natively spawn `cmd.exe`.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini3.8` (Gemini 3.8 Flash High)
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Empirical System Resources Utilized**:
+  - GitHub CLI (`C:\Users\jimco\bin\gh.exe`)
+  - Git CLI (`git merge`, `git tag`, `git push`)
+  - Remote: `https://github.com/jimcollinsworth/commercial-killer.git`
+
+---
+
+## 2026-11-21: Fast Local Android Decision Model & Removal of Generative LLMs (v2.2)
+
+> [!NOTE] User Instructions & Guidance:
+> - Replace all generative LLM / Gemini Nano Prompt API inference and roadmap proposals with a Fast Local Android Decision Model (`FrameDecisionEngine`).
+> - Execute two non-autoregressive per-frame structured queries every 100 ms: `is_commercial` (commercial discriminator) and `is_same_scene` (cosine similarity between frame $t$ and $t-1$ with rolling cut cadence tracking).
+> - Surface decision badges, shot duration, rolling cuts/min telemetry, and a Scene Cut Similarity Threshold slider in the Compose UI.
+> - Remove `AiAnalysisViewModel.kt`, increment build version to `v2.2` (`versionCode = 12`), and synchronize governance documentation (`ROADMAP.md`, `PLANNING.md`, `README.md`, `JOURNAL.md`).
+
+### Problem & Diagnosis
+- The codebase contained `AiAnalysisViewModel.kt` with an on-device Gemini Nano / ML Kit Prompt API placeholder, and governance documents (`ROADMAP.md`, `README.md`, `PLANNING.md`, `HelpScreen.kt`) proposed autoregressive multimodal LLM prompts as a second-stage commercial evaluator.
+- Autoregressive token generation introduces compute and latency overhead unsuitable for deterministic 100 ms frame evaluation, while 1D scalar shift distance alone (`SpectrogramComparator`) did not fuse classifier tags, spectral compression density, and temporal shot-cut cadence.
+
+### Root Cause & Technical Analysis
+- Per-frame broadcast segmentation requires a non-autoregressive System 1 evaluator operating directly on the 100 ms Mel-spectrogram vector $\vec{F}_t$, parallel `AudioClassifierEngine` tags (`List<ClassifierScore>`), and frame transition distance $\Delta$ without hot-loop heap allocations.
+- Tracking shot continuity requires measuring cosine similarity $\frac{\vec{F}_t \cdot \vec{F}_{t-1}}{\|\vec{F}_t\| \, \|\vec{F}_{t-1}\|}$ against a configurable threshold (`DEFAULT_SCENE_SIMILARITY_THRESHOLD = 0.85f`) and maintaining a rolling 60,000 ms cut timestamp queue (`ArrayDeque<Long>`).
+- Commercial muting and program unmuting require consecutive-frame hysteresis (`MUTE` after a scene cut or 3 consecutive commercial frames; `UNMUTE` after 5 consecutive non-commercial frames) to suppress single-frame transient spikes.
+
+### Solution & Standard Procedure
+1. **Fast Local Decision Engine (`FrameDecisionEngine.kt`)**:
+   - Implemented `com.example.commercialkiller.data.decision.FrameDecisionEngine`, `FrameDecision`, `SceneContinuityResult`, `CommercialEvaluationResult`, and `TvActionDecision` (`MUTE`, `UNMUTE`, `HOLD`).
+   - Implemented `evaluateSceneContinuity` with cosine similarity over a reused pre-allocated `FloatArray(128)` `previousFrameBuffer`, rolling 60,000 ms cut pruning, `shotDurationMs`, and `cutCadencePerMin`.
+   - Implemented `evaluateCommercial` combining classifier tag weights, Mel-band spectral compression/loudness density, transition `shiftDistance`, and rolling cut cadence boost at `>= 15f` cuts/min.
+   - Implemented `evaluateFrame` and `reset()`, gating `TvActionDecision` via `MUTE_CONSECUTIVE_COMMERCIAL_FRAMES = 3` and `UNMUTE_CONSECUTIVE_PROGRAM_FRAMES = 5`.
+2. **Engine Wiring & Generative Code Removal (`AudioWorkbenchEngine.kt`, `AiAnalysisViewModel.kt`)**:
+   - Removed generative LLM inference placeholder `AiAnalysisViewModel.kt` and all Gemini Nano Prompt API references.
+   - Added `frameDecision: FrameDecision` and `sceneSimilarityThreshold: Float` to `WorkbenchState`, wired `decisionEngine.evaluateFrame(...)` into `processAudioFrame`, routed `decision.recommendedAction` into `evaluateAutoMute`, and exposed `setSceneSimilarityThreshold(value: Float)`.
+3. **Compose UI & Help Screen (`MainScreen.kt`, `HelpScreen.kt`)**:
+   - Added `FrameDecisionBar` directly beneath `SpectrogramWaterfallCard` in compact and expanded two-pane layouts displaying `COMMERCIAL`/`PROGRAM` score badges, `SAME SCENE`/`SCENE CUT` cosine similarity badges, and `Shot: <X.X>s | <N> cuts/min` telemetry.
+   - Added the `Scene Cut Similarity Threshold` slider (`0.50f..0.98f`) to `SpectrogramSettingsSheet`.
+   - Updated `HelpScreen.kt` to document `FrameDecisionEngine` queries, cosine similarity, cut cadence, and hysteresis gating with zero generative LLM references.
+4. **Unit Tests, Versioning & Governance Docs**:
+   - Added unit tests in `FrameDecisionEngineTest.kt` and updated `AudioWorkbenchEngineTest.kt`.
+   - Incremented `app/build.gradle.kts` to `versionCode = 12`, `versionName = "2.2"`.
+   - Updated `ROADMAP.md`, `PLANNING.md`, `README.md`, and `JOURNAL.md` to remove generative LLM / Gemini Nano Prompt API proposals and document the `v2.2` Fast Local Android Decision Model architecture.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Argon`
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Android SDK 36 (`compileSdk = 36`, `targetSdk = 36`, `minSdk = 24`)
+  - Gradle / JDK 17 toolchain configuration (`app/build.gradle.kts`)
+  - Git feature branch (`feature/fast-local-decision-model`)
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
+
 
 
 
