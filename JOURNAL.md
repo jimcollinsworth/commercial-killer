@@ -850,7 +850,43 @@
   - Git feature branch (`feature/fast-local-decision-model`)
 
 ---
-*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon.*
+---
+
+## 2026-11-22: Fix 16 KB Page-Size ELF Alignment Warning (v2.2.01)
+
+> [!NOTE] User Instructions & Guidance:
+> - Resolve the Android 16 KB memory page-size compatibility warning observed when deploying `app-debug.apk` to Pixel 8.
+
+### Problem & Diagnosis
+- Running `llvm-objdump.exe -p` across merged `arm64-v8a` native libraries showed three libraries already aligned to 16 KB (`align 2**14`), while `libtask_audio_jni.so` had `LOAD ... align 2**12` (4 KB alignment).
+
+### Root Cause & Technical Analysis
+- `org.tensorflow:tensorflow-lite-task-audio:0.4.4` ships a 4 KB-aligned `libtask_audio_jni.so` binary (`2**12`), whereas `com.google.mediapipe:tasks-audio:0.10.35` ships `libmediapipe_tasks_jni.so` compiled with 16 KB ELF segment alignment (`2**14`).
+
+### Solution & Standard Procedure
+1. **Dependency Migration (`gradle/libs.versions.toml`, `app/build.gradle.kts`)**:
+   - Removed legacy `tensorflow-lite`, `tensorflow-lite-support`, and `tensorflow-lite-task-audio:0.4.4`.
+   - Added `com.google.mediapipe:tasks-audio:0.10.35` (`libs.mediapipe.tasks.audio`), enabled `packaging { jniLibs { useLegacyPackaging = false } }`, and incremented to `versionCode = 13`, `versionName = "2.2.01"`.
+2. **Audio Classifier Migration (`AudioClassifierEngine.kt`)**:
+   - Replaced `org.tensorflow.lite.task.audio.classifier.AudioClassifier` and `TensorAudio` with `com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifier`, `RunningMode.AUDIO_CLIPS`, and cached `AudioData` buffers (`16000 Hz`, mono).
+3. **Verification**:
+   - `cmd.exe /c "gradlew.bat testDebugUnitTest assembleDebug"`: `BUILD SUCCESSFUL in 1m 10s`; **51/51** unit tests passed (`0` failures, `0` skipped across 11 XML suites).
+   - `llvm-objdump.exe -p` verified `align 2**14` on all `LOAD` segments in all four `arm64-v8a` and `x86_64` `.so` files (`libandroidx.graphics.path.so`, `libimage_processing_util_jni.so`, `libmediapipe_tasks_jni.so`, `libsurface_util_jni.so`).
+   - `zipalign.exe -c -P 16 -v 4 app-debug.apk` returned exit code `0` (`Verification succesful`).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Log Source**: `C:\Users\jimco\.gemini\antigravity\brain\85e16c9e-9045-40e8-8026-f3ac61135af7\.system_generated\logs\transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Google Maven `com.google.mediapipe:tasks-audio:0.10.35`
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`)
+  - LLVM `llvm-objdump.exe` (`C:\Program Files\LLVM\bin`)
+  - Gradle / JDK 17 (`gradlew.bat testDebugUnitTest assembleDebug`)
+
+---
+*Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 
 
 

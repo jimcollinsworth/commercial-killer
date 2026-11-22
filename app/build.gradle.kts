@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.commercialkiller"
         minSdk = 24
         targetSdk = 36
-        versionCode = 12
-        versionName = "2.2"
+        versionCode = 13
+        versionName = "2.2.01"
     }
 
     buildTypes {
@@ -33,6 +33,9 @@ android {
     }
 
     packaging {
+      jniLibs {
+        useLegacyPackaging = false
+      }
       resources {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
@@ -95,6 +98,6 @@ dependencies {
   // Adaptive UI
   implementation(libs.androidx.adaptive)
 
-  // TensorFlow Lite & Audio Classification (LiteRT / Hugging Face models)
-  implementation(libs.tflite.task.audio)
+  // MediaPipe Tasks Audio (16 KB ELF page-size aligned)
+  implementation(libs.mediapipe.tasks.audio)
 }

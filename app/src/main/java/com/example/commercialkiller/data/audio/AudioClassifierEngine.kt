@@ -1,14 +1,19 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8.
+// Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.data.audio
 
 import android.content.Context
 import android.util.Log
+import com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifier
+import com.google.mediapipe.tasks.audio.core.RunningMode
+import com.google.mediapipe.tasks.components.containers.AudioData
+import com.google.mediapipe.tasks.core.BaseOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.tensorflow.lite.support.audio.TensorAudio
-import org.tensorflow.lite.task.audio.classifier.AudioClassifier
-import org.tensorflow.lite.task.core.BaseOptions
 import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -18,11 +23,11 @@ data class ClassifierScore(
 )
 
 /**
- * On-device audio classifier running open-weights Hugging Face / LiteRT models in parallel
- * with the Mel-spectrogram signal pipeline.
+ * On-device audio classifier running MediaPipe Tasks Audio models (16 KB aligned)
+ * in parallel with the Mel-spectrogram signal pipeline.
  *
- * Supports loading any compatible TFLite audio classification model (e.g., YAMNet or custom
- * fine-tuned Audio Spectrogram Transformer / AST models).
+ * Supports loading compatible audio classification models (e.g., YAMNet or custom
+ * Audio Spectrogram Transformer / AST models) with an acoustic spectral feature fallback.
  */
 class AudioClassifierEngine(
     private val context: Context? = null
@@ -30,11 +35,20 @@ class AudioClassifierEngine(
     companion object {
         private const val TAG = "AudioClassifierEngine"
         const val DEFAULT_MODEL_PATH = "yamnet.tflite"
+        private const val FALLBACK_MODEL_NAME = "Acoustic Feature Classifier (HF Fallback)"
+        private const val SAMPLE_RATE_HZ = 16000f
     }
 
-    private var tfliteClassifier: AudioClassifier? = null
-    private var tensorAudio: TensorAudio? = null
-    private var activeModelName: String = "Acoustic Feature Classifier (HF Fallback)"
+    private var mediaPipeClassifier: AudioClassifier? = null
+    private var cachedAudioData: AudioData? = null
+    private var cachedAudioDataLength: Int = -1
+    private val audioFormat: AudioData.AudioDataFormat by lazy {
+        AudioData.AudioDataFormat.builder()
+            .setNumOfChannels(1)
+            .setSampleRate(SAMPLE_RATE_HZ)
+            .build()
+    }
+    private var activeModelName: String = FALLBACK_MODEL_NAME
 
     private fun logD(message: String) {
         try {
@@ -65,43 +79,52 @@ class AudioClassifierEngine(
     }
 
     /**
-     * Initializes the classifier using bundled asset or prepares the fallback engine.
+     * Initializes the MediaPipe AudioClassifier using a custom file or bundled asset,
+     * falling back to spectral feature classification when no model asset is present.
      */
     fun initializeClassifier(customModelFile: File? = null) {
         if (context == null) {
             logD("Context not provided; using acoustic spectral feature classifier.")
+            activeModelName = FALLBACK_MODEL_NAME
             return
         }
 
+        close()
+
         try {
-            val baseOptions = BaseOptions.builder().setNumThreads(2).build()
+            val baseOptionsBuilder = BaseOptions.builder()
+            val pendingModelName: String
+
+            if (customModelFile != null && customModelFile.exists()) {
+                val modelBuffer = readFileToDirectBuffer(customModelFile)
+                baseOptionsBuilder.setModelAssetBuffer(modelBuffer)
+                pendingModelName = customModelFile.name
+            } else {
+                baseOptionsBuilder.setModelAssetPath(DEFAULT_MODEL_PATH)
+                pendingModelName = DEFAULT_MODEL_PATH
+            }
+
             val options = AudioClassifier.AudioClassifierOptions.builder()
-                .setBaseOptions(baseOptions)
+                .setBaseOptions(baseOptionsBuilder.build())
+                .setRunningMode(RunningMode.AUDIO_CLIPS)
                 .setMaxResults(5)
                 .build()
 
-            tfliteClassifier = if (customModelFile != null && customModelFile.exists()) {
-                activeModelName = customModelFile.name
-                AudioClassifier.createFromFileAndOptions(customModelFile, options)
-            } else {
-                // Attempt to load default model from assets
-                try {
-                    val classifier = AudioClassifier.createFromFileAndOptions(context, DEFAULT_MODEL_PATH, options)
-                    activeModelName = DEFAULT_MODEL_PATH
-                    classifier
-                } catch (e: Exception) {
-                    logD("Bundled model $DEFAULT_MODEL_PATH not found in assets, using fallback.")
-                    null
-                }
-            }
-
-            if (tfliteClassifier != null) {
-                tensorAudio = tfliteClassifier?.createInputTensorAudio()
-            }
+            mediaPipeClassifier = AudioClassifier.createFromOptions(context, options)
+            activeModelName = pendingModelName
         } catch (e: Exception) {
-            logW("Failed to initialize TFLite model: ${e.message}. Using fallback classifier.")
-            tfliteClassifier = null
-            tensorAudio = null
+            logW("Failed to initialize MediaPipe AudioClassifier: ${e.message}. Using fallback classifier.")
+            mediaPipeClassifier = null
+            cachedAudioData = null
+            cachedAudioDataLength = -1
+            activeModelName = FALLBACK_MODEL_NAME
+        }
+    }
+
+    private fun readFileToDirectBuffer(file: File): ByteBuffer {
+        return FileInputStream(file).use { fis ->
+            val channel = fis.channel
+            channel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())
         }
     }
 
@@ -111,25 +134,37 @@ class AudioClassifierEngine(
     suspend fun classify(samples: FloatArray): List<ClassifierScore> = withContext(Dispatchers.Default) {
         if (samples.isEmpty()) return@withContext emptyList()
 
-        val classifier = tfliteClassifier
-        val audio = tensorAudio
-
-        if (classifier != null && audio != null) {
+        val classifier = mediaPipeClassifier
+        if (classifier != null) {
             try {
-                audio.load(samples)
-                val results = classifier.classify(audio)
-                if (results.isNotEmpty() && results[0].categories.isNotEmpty()) {
-                    val items = results[0].categories.map {
-                        ClassifierScore(label = it.label, score = it.score)
-                    }.take(3)
+                val audioData = if (cachedAudioData != null && cachedAudioDataLength == samples.size) {
+                    cachedAudioData!!
+                } else {
+                    AudioData.create(audioFormat, samples.size).also {
+                        cachedAudioData = it
+                        cachedAudioDataLength = samples.size
+                    }
+                }
+                audioData.load(samples)
+
+                val result = classifier.classify(audioData)
+                val categories = result.classificationResults()
+                    .firstOrNull()
+                    ?.classifications()
+                    ?.firstOrNull()
+                    ?.categories()
+                if (!categories.isNullOrEmpty()) {
+                    val items = categories.take(3).map {
+                        ClassifierScore(label = it.categoryName(), score = it.score())
+                    }
                     return@withContext padToThree(items)
                 }
             } catch (e: Exception) {
-                logE("Error running TFLite audio classification", e)
+                logE("Error running MediaPipe audio classification", e)
             }
         }
 
-        // Open-weights Fallback Classifier: Acoustic Feature Analysis
+        // Fallback Classifier: Acoustic Feature Analysis
         // Classifies audio into Speech, Music, Commercial / Jingle, or Silence based on spectral characteristics
         classifyByAcousticFeatures(samples)
     }
@@ -224,9 +259,10 @@ class AudioClassifierEngine(
 
     fun close() {
         try {
-            tfliteClassifier?.close()
-            tfliteClassifier = null
-            tensorAudio = null
+            mediaPipeClassifier?.close()
+            mediaPipeClassifier = null
+            cachedAudioData = null
+            cachedAudioDataLength = -1
         } catch (e: Exception) {
             logE("Error closing classifier", e)
         }
