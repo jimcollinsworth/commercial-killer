@@ -14,9 +14,9 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 - **Limitations**: Measures raw spectral magnitude change without distinguishing commercial compression from speech volume shifts or tracking shot cadence over time.
 
 ### Alternative B: Fast Local Android Decision Model (`FrameDecisionEngine`, Non-Autoregressive System 1 Evaluator)
-- **Algorithm**: Combine parallel on-device LiteRT / MediaPipe audio classification (`AudioClassifierEngine`) with deterministic, non-autoregressive per-frame decision queries in `FrameDecisionEngine` running on every 100 ms frame.
-- **Characteristics**: Zero autoregressive token generation, sub-millisecond per-frame vector scoring, multi-factor fusion (classifier tags, spectral energy compression/variance, shift distance, and rolling shot-cut cadence), and hysteresis-gated `MUTE` / `UNMUTE` / `HOLD` outputs.
-- **Limitations**: Relies on acoustic/spectrogram features and classifier tag coverage until video-frame ROI caching is integrated for muted-TV unmute detection.
+- **Algorithm**: Combine parallel on-device LiteRT / MediaPipe audio classification (`AudioClassifierEngine`) and synchronized `250 ms` video embeddings (`VideoFrameAnalyzer` / `VisualFrameDescriptor`) with deterministic, non-autoregressive per-frame decision queries in `FrameDecisionEngine` running on every `100 ms` frame.
+- **Characteristics**: Zero autoregressive token generation, sub-millisecond per-frame vector scoring, multi-factor fusion (classifier tags, spectral energy compression/variance, shift distance, `56`-float JEPA-like visual descriptors, and rolling shot-cut cadence), and hysteresis-gated `MUTE` / `UNMUTE` / `HOLD` outputs, with an optional `.tflite` vision embedder path using `litert-runtime` (`CompiledModel` + reusable `TensorBuffer` with GPU-to-CPU fallback).
+- **Status (`v2.4`)**: `VideoFrameAnalyzer` extracts `56`-float visual descriptors and `64×36` `RGB_565` thumbnails across CameraX `ImageAnalysis` (`MIC / CAM`) and `TextureView` + `MediaPlayer` (`FILE / VIDEO`), while `SYNTH` mode is removed. Increment 2 (`v2.5`) adds the fixed-width equal-length Session Segment Timeline; Increment 3 (`v2.6`) fuses `VisualFrameDescriptor` and `ProgramFingerprintCache` into `FrameDecisionEngine` for audio+video commercial scoring and muted-TV visual unmute.
 
 ### Comparison: 1D Matrix Distance vs. On-Device Fast Decision Model
 
@@ -29,7 +29,7 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 | **Memory Allocation** | Scalar accumulator | Pre-allocated `previousFrame` `FloatArray` buffer + bounded 60,000 ms `ArrayDeque<Long>` |
 | **Action Gating** | Single threshold crossing ($\Delta > \tau$) | First-gate media check (`!isMedia` forces `HOLD`) + frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
 
-In `v2.3.01`, `AudioWorkbenchEngine` executes both stages in the 100 ms inspection loop: `SpectrogramComparator` supplies the scalar shift distance $\Delta$, while `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`.
+In `v2.4`, `AudioWorkbenchEngine` executes `100 ms` audio inspection alongside `250 ms` `VideoFrameAnalyzer` visual sampling across `MIC / CAM` (`AudioSourceMode.LIVE`) and `FILE / VIDEO` (`AudioSourceMode.FILE`), while `SpectrogramComparator` supplies the scalar shift distance $\Delta$ and `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`. Increment 2 (`v2.5`) adds the fixed-width equal-length Session Segment Timeline, and Increment 3 (`v2.6`) adds cross-modal audio+video fusion and visual-only muted-TV unmute (`ProgramFingerprintCache` / `litert-runtime`).
 
 ---
 

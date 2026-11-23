@@ -137,16 +137,34 @@ fun StepNextIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = Color.
 }
 
 @Composable
-fun SynthIcon(modifier: Modifier = Modifier.size(18.dp), tint: Color = Color.White) {
+fun CameraIcon(modifier: Modifier = Modifier.size(18.dp), tint: Color = Color.White) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        val path = Path().apply {
-            moveTo(w * 0.1f, h * 0.5f)
-            cubicTo(w * 0.25f, h * 0.15f, w * 0.4f, h * 0.15f, w * 0.5f, h * 0.5f)
-            cubicTo(w * 0.6f, h * 0.85f, w * 0.75f, h * 0.85f, w * 0.9f, h * 0.5f)
+        val stroke = 1.8.dp.toPx()
+        // Outer camera body
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(w * 0.12f, h * 0.28f),
+            size = androidx.compose.ui.geometry.Size(w * 0.76f, h * 0.56f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.1f, w * 0.1f),
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
+        // Top prism notch
+        val notchPath = Path().apply {
+            moveTo(w * 0.34f, h * 0.28f)
+            lineTo(w * 0.41f, h * 0.16f)
+            lineTo(w * 0.59f, h * 0.16f)
+            lineTo(w * 0.66f, h * 0.28f)
         }
-        drawPath(path, color = tint, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+        drawPath(notchPath, color = tint, style = Stroke(width = stroke, cap = StrokeCap.Round))
+        // Center lens circle
+        drawCircle(
+            color = tint,
+            radius = minOf(w, h) * 0.15f,
+            center = Offset(w * 0.5f, h * 0.56f),
+            style = Stroke(width = stroke)
+        )
     }
 }
 

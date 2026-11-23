@@ -5,6 +5,7 @@ package com.example.commercialkiller.data.audio
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -16,6 +17,8 @@ import com.example.commercialkiller.data.action.TvControlManager
 import com.example.commercialkiller.data.decision.FrameDecision
 import com.example.commercialkiller.data.decision.FrameDecisionEngine
 import com.example.commercialkiller.data.decision.TvActionDecision
+import com.example.commercialkiller.data.video.VideoFrameSnapshot
+import com.example.commercialkiller.data.video.VisualFrameDescriptor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,13 +33,9 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.sin
-import kotlin.random.Random
 
 enum class AudioSourceMode {
-    SYNTH,
-    MIC,
+    LIVE,
     FILE
 }
 
@@ -49,7 +48,8 @@ data class WorkbenchEvent(
 
 data class WorkbenchState(
     val isRunning: Boolean = false,
-    val sourceMode: AudioSourceMode = AudioSourceMode.SYNTH,
+    val sourceMode: AudioSourceMode = AudioSourceMode.LIVE,
+    val isCameraEnabled: Boolean = false,
     val intervalMs: Long = 100L,
     val threshold: Float = 0.05f,
     val currentDistance: Float = 0f,
@@ -67,12 +67,15 @@ data class WorkbenchState(
     val fileProgress: Float = 0f,
     val isVideo: Boolean = false,
     val mediaUri: Uri? = null,
+    val videoFrameCount: Long = 0L,
+    val latestVisualDescriptor: VisualFrameDescriptor? = null,
+    val latestVideoThumbnail: Bitmap? = null,
     val numMelBands: Int = 80,
     val frameDecision: FrameDecision = FrameDecision(),
     val sceneSimilarityThreshold: Float = FrameDecisionEngine.DEFAULT_SCENE_SIMILARITY_THRESHOLD,
     val mediaThreshold: Float = FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD
 ) {
-    val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.MIC
+    val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.LIVE
 }
 
 /**
@@ -94,6 +97,8 @@ class AudioWorkbenchEngine(
     private var filePlaybackOffset = 0
     @Volatile
     private var isFileSeeking = false
+    @Volatile
+    private var lastVisualDescriptor: VisualFrameDescriptor? = null
     private var isTvCurrentlyMuted = false
     private var isPaused = false
 
@@ -109,11 +114,13 @@ class AudioWorkbenchEngine(
     private val scope = CoroutineScope(Dispatchers.Default)
 
     fun start(sourceMode: AudioSourceMode = _state.value.sourceMode) {
+        if (sourceMode == AudioSourceMode.FILE && loadedAudio == null) return
         if (_state.value.isRunning && _state.value.sourceMode == sourceMode) return
         stop()
 
         comparator.reset()
         decisionEngine.reset()
+        lastVisualDescriptor = null
         isTvCurrentlyMuted = false
         isPaused = false
 
@@ -127,25 +134,23 @@ class AudioWorkbenchEngine(
                 frameDecision = FrameDecision(),
                 sceneSimilarityThreshold = decisionEngine.getSceneSimilarityThreshold(),
                 mediaThreshold = decisionEngine.getMediaThreshold(),
-                isVideo = if (sourceMode == AudioSourceMode.FILE) (loadedAudio?.isVideo ?: current.isVideo) else false
+                isVideo = if (sourceMode == AudioSourceMode.FILE) (loadedAudio?.isVideo ?: current.isVideo) else false,
+                videoFrameCount = 0L,
+                latestVisualDescriptor = null,
+                latestVideoThumbnail = null
             )
         }
 
         engineJob = scope.launch {
             when (sourceMode) {
-                AudioSourceMode.MIC -> runLiveMicLoop()
+                AudioSourceMode.LIVE -> runLiveMicLoop()
                 AudioSourceMode.FILE -> runFileLoop()
-                AudioSourceMode.SYNTH -> runSimulatedLoop()
             }
         }
     }
 
-    fun start(useLiveMic: Boolean) {
-        start(if (useLiveMic) AudioSourceMode.MIC else AudioSourceMode.SYNTH)
-    }
-
     /**
-     * Pauses active audio synthesis, playback, or mic processing when the host Activity is STOPPED.
+     * Pauses active audio capture or file playback when the host Activity is STOPPED.
      * Preserves state and playback position so it can resume.
      */
     fun pause() {
@@ -203,6 +208,32 @@ class AudioWorkbenchEngine(
         decisionEngine.setMediaThreshold(value)
         val clamped = decisionEngine.getMediaThreshold()
         _state.update { current -> current.copy(mediaThreshold = clamped) }
+    }
+
+    fun setCameraEnabled(enabled: Boolean) {
+        if (!enabled) {
+            lastVisualDescriptor = null
+        }
+        _state.update { current ->
+            current.copy(
+                isCameraEnabled = enabled,
+                latestVisualDescriptor = if (enabled) current.latestVisualDescriptor else null,
+                latestVideoThumbnail = if (enabled) current.latestVideoThumbnail else null
+            )
+        }
+    }
+
+    fun getLastVisualDescriptor(): VisualFrameDescriptor? = lastVisualDescriptor
+
+    fun onVideoFrameSampled(snapshot: VideoFrameSnapshot) {
+        lastVisualDescriptor = snapshot.descriptor
+        _state.update { current ->
+            current.copy(
+                latestVisualDescriptor = snapshot.descriptor,
+                latestVideoThumbnail = snapshot.thumbnail,
+                videoFrameCount = current.videoFrameCount + 1L
+            )
+        }
     }
 
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {
@@ -392,85 +423,6 @@ class AudioWorkbenchEngine(
                 filePositionMs = filePositionMs ?: current.filePositionMs,
                 fileProgress = fileProgress ?: current.fileProgress
             )
-        }
-    }
-
-    /**
-     * Broadcast simulation cycle:
-     * - Multi-formant speech simulation (F1=500Hz, F2=1500Hz, F3=2500Hz)
-     * - 200 ms silence gap (commercial pod boundary)
-     * - High-compression commercial segment (loudness increase + multi-harmonic jingle bed)
-     */
-    private suspend fun runSimulatedLoop() {
-        var tick = 0
-        val sampleRate = 16000
-        val chunkSize = 512
-        val history = ArrayDeque<FloatArray>(30)
-        val logs = ArrayDeque<WorkbenchEvent>(50)
-        val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
-        val waveformView = FloatArray(256)
-        val samples = FloatArray(chunkSize)
-
-        while (scope.isActive) {
-            val interval = _state.value.intervalMs
-            tick++
-
-            // 60-tick cycle (6.0s at 100ms interval)
-            val phase = tick % 60
-
-            val isSilenceGap = phase in 35..36
-            val isCommercialSegment = phase in 37..59
-
-            if (isSilenceGap) {
-                // Silence dip / black frame transition
-                for (i in 0 until chunkSize) {
-                    samples[i] = (Random.nextFloat() - 0.5f) * 0.002f
-                }
-            } else if (isCommercialSegment) {
-                // Commercial break: Loudness boost, multi-harmonic jingle bed + high-frequency percussion
-                for (i in 0 until chunkSize) {
-                    val sampleIdx = tick * chunkSize + i
-                    val t = sampleIdx.toDouble() / sampleRate
-                    val chord = sin(2.0 * PI * 440.0 * t) * 0.18 +
-                            sin(2.0 * PI * 554.37 * t) * 0.14 +
-                            sin(2.0 * PI * 659.25 * t) * 0.12 +
-                            sin(2.0 * PI * 5200.0 * t) * 0.38
-                    val beat = sin(2.0 * PI * 4.0 * t) // 4 Hz rhythm pulse
-                    val percussion = (Random.nextFloat() - 0.5f) * (if (beat > 0.7) 0.50f else 0.42f)
-                    samples[i] = ((chord * 0.7 + percussion) * 0.85).toFloat().coerceIn(-1.0f, 1.0f)
-                }
-            } else {
-                // Program segment: Multi-formant speech/dialogue simulation
-                for (i in 0 until chunkSize) {
-                    val sampleIdx = tick * chunkSize + i
-                    val t = sampleIdx.toDouble() / sampleRate
-                    val speechCadence = (sin(2.0 * PI * 2.5 * t) + 1.0) * 0.5
-                    val pitch = sin(2.0 * PI * 130.0 * t)
-                    val f1 = sin(2.0 * PI * 500.0 * t) * 0.4
-                    val f2 = sin(2.0 * PI * 1500.0 * t) * 0.25
-                    val f3 = sin(2.0 * PI * 2500.0 * t) * 0.15
-                    val voice = (pitch * 0.2 + f1 + f2 + f3) * speechCadence
-                    val ambient = (Random.nextFloat() - 0.5f) * 0.04f
-                    samples[i] = ((voice * 0.6 + ambient) * 0.45).toFloat().coerceIn(-1.0f, 1.0f)
-                }
-            }
-
-            val significantDesc = when {
-                isSilenceGap -> "Broadcast Silence / Black Frame Gap"
-                isCommercialSegment -> "Commercial Break Transition (Acoustic Shift)"
-                else -> "Program Return Transition"
-            }
-
-            processAudioFrame(
-                samples = samples,
-                history = history,
-                logs = logs,
-                dateFormat = dateFormat,
-                waveformView = waveformView,
-                significantDescription = significantDesc
-            )
-
-            delay(interval)
         }
     }
 

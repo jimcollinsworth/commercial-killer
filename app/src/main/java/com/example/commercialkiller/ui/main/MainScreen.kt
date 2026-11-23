@@ -5,8 +5,11 @@ package com.example.commercialkiller.ui.main
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
+import android.media.MediaPlayer
 import android.net.Uri
-import android.widget.VideoView
+import android.view.Surface
+import android.view.TextureView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,17 +51,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,9 +81,15 @@ import com.example.commercialkiller.data.audio.AudioSourceMode
 import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
 import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.data.audio.WorkbenchEvent
+import com.example.commercialkiller.data.audio.WorkbenchState
 import com.example.commercialkiller.data.decision.FrameDecision
 import com.example.commercialkiller.data.decision.MediaEnvironment
+import com.example.commercialkiller.data.video.VideoFrameAnalyzer
+import com.example.commercialkiller.data.video.VideoFrameSnapshot
+import com.example.commercialkiller.data.video.VisualFrameDescriptor
+import com.example.commercialkiller.ui.camera.CameraScreen
 import com.example.commercialkiller.ui.components.AudioFileIcon
+import com.example.commercialkiller.ui.components.CameraIcon
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.HelpIcon
 import com.example.commercialkiller.ui.components.MicIcon
@@ -84,8 +98,10 @@ import com.example.commercialkiller.ui.components.SettingsIcon
 import com.example.commercialkiller.ui.components.SlidersIcon
 import com.example.commercialkiller.ui.components.SpectrogramWaterfall
 import com.example.commercialkiller.ui.components.StopIcon
-import com.example.commercialkiller.ui.components.SynthIcon
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MainScreen(
@@ -109,24 +125,51 @@ fun MainScreen(
         }
     }
 
-    // Microphone runtime permission launcher
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            engine.start(AudioSourceMode.MIC)
+    // Live MIC / CAM runtime permissions launcher
+    val livePermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] == true
+        val camGranted = permissions[Manifest.permission.CAMERA] == true
+        if (micGranted) {
+            engine.setCameraEnabled(camGranted)
+            engine.start(AudioSourceMode.LIVE)
         }
     }
 
-    // Composition Lifecycle: Initialize synthesis on launch unless a media file intent already loaded FILE mode
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        engine.setCameraEnabled(isGranted)
+    }
+
+    // Option A Cold-Launch: Auto-start MIC / CAM when RECORD_AUDIO is granted unless a file intent loaded FILE mode
     DisposableEffect(Unit) {
-        if (engine.state.value.sourceMode == AudioSourceMode.SYNTH && !engine.state.value.isRunning) {
-            engine.start(AudioSourceMode.SYNTH)
+        if (engine.state.value.sourceMode == AudioSourceMode.LIVE && !engine.state.value.isRunning) {
+            val hasMic = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (hasMic) {
+                val hasCam = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                engine.setCameraEnabled(hasCam)
+                engine.start(AudioSourceMode.LIVE)
+            }
         }
         onDispose {
             engine.stop()
         }
     }
+
+    val hasCameraPermission = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+    val isLiveCameraPreviewVisible =
+        state.sourceMode == AudioSourceMode.LIVE && state.isCameraEnabled && hasCameraPermission
 
     // Host Lifecycle: Automatically pause audio & analysis when app is backgrounded, resume on foreground
     LifecycleResumeEffect(engine) {
@@ -191,37 +234,44 @@ fun MainScreen(
                             onItemClick = onItemClick,
                             onOpenSpectrogramSettings = { showSettingsSheet = true },
                             onToggleRunning = {
-                                if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
+                                handleToggleRunning(
+                                    context = context,
+                                    state = state,
+                                    engine = engine,
+                                    livePermissionsLauncher = livePermissionsLauncher,
+                                    filePickerLauncher = filePickerLauncher
+                                )
                             },
                             onSelectSource = { mode ->
-                                handleSelectSource(mode, context, state, engine, micPermissionLauncher, filePickerLauncher)
+                                handleSelectSource(
+                                    mode = mode,
+                                    context = context,
+                                    state = state,
+                                    engine = engine,
+                                    livePermissionsLauncher = livePermissionsLauncher,
+                                    filePickerLauncher = filePickerLauncher
+                                )
                             }
                         )
 
-                        // 1. In case of video, video display on top
-                        if (state.sourceMode == AudioSourceMode.FILE && state.isVideo && state.mediaUri != null) {
-                            VideoPlayerCard(
-                                uri = state.mediaUri!!,
-                                fileName = state.loadedFileName ?: "",
-                                isPlaying = state.isRunning,
-                                positionMs = state.filePositionMs,
-                                durationMs = state.fileDurationMs,
-                                progress = state.fileProgress,
-                                onSeek = { engine.seekFile(it) },
-                                onChangeFile = { launchMediaPicker(filePickerLauncher) }
-                            )
-                        } else if (state.sourceMode == AudioSourceMode.FILE && state.loadedFileName != null) {
-                            FilePlaybackCard(
-                                fileName = state.loadedFileName ?: "",
-                                positionMs = state.filePositionMs,
-                                durationMs = state.fileDurationMs,
-                                progress = state.fileProgress,
-                                onSeek = { engine.seekFile(it) },
-                                onChangeFile = { launchMediaPicker(filePickerLauncher) }
-                            )
-                        }
+                        ActiveMediaInputSlot(
+                            state = state,
+                            hasCameraPermission = hasCameraPermission,
+                            engine = engine,
+                            onSeek = { engine.seekFile(it) },
+                            onChangeFile = { launchMediaPicker(filePickerLauncher) },
+                            onToggleCamera = {
+                                handleToggleCamera(
+                                    context = context,
+                                    state = state,
+                                    engine = engine,
+                                    cameraPermissionLauncher = cameraPermissionLauncher
+                                )
+                            }
+                        )
 
                         ShiftStatusBanner(
+                            isRunning = state.isRunning,
                             isTriggered = state.isEventTriggered,
                             currentDistance = state.currentDistance,
                             threshold = state.threshold
@@ -286,44 +336,51 @@ fun MainScreen(
                         onItemClick = onItemClick,
                         onOpenSpectrogramSettings = { showSettingsSheet = true },
                         onToggleRunning = {
-                            if (state.isRunning) engine.stop() else engine.start(state.sourceMode)
+                            handleToggleRunning(
+                                context = context,
+                                state = state,
+                                engine = engine,
+                                livePermissionsLauncher = livePermissionsLauncher,
+                                filePickerLauncher = filePickerLauncher
+                            )
                         },
                         onSelectSource = { mode ->
-                            handleSelectSource(mode, context, state, engine, micPermissionLauncher, filePickerLauncher)
+                            handleSelectSource(
+                                mode = mode,
+                                context = context,
+                                state = state,
+                                engine = engine,
+                                livePermissionsLauncher = livePermissionsLauncher,
+                                filePickerLauncher = filePickerLauncher
+                            )
                         }
                     )
 
-                    // 1. In case of video, video file display on top
-                    if (state.sourceMode == AudioSourceMode.FILE && state.isVideo && state.mediaUri != null) {
-                        VideoPlayerCard(
-                            uri = state.mediaUri!!,
-                            fileName = state.loadedFileName ?: "",
-                            isPlaying = state.isRunning,
-                            positionMs = state.filePositionMs,
-                            durationMs = state.fileDurationMs,
-                            progress = state.fileProgress,
-                            onSeek = { engine.seekFile(it) },
-                            onChangeFile = { launchMediaPicker(filePickerLauncher) }
-                        )
-                    } else if (state.sourceMode == AudioSourceMode.FILE && state.loadedFileName != null) {
-                        FilePlaybackCard(
-                            fileName = state.loadedFileName ?: "",
-                            positionMs = state.filePositionMs,
-                            durationMs = state.fileDurationMs,
-                            progress = state.fileProgress,
-                            onSeek = { engine.seekFile(it) },
-                            onChangeFile = { launchMediaPicker(filePickerLauncher) }
-                        )
-                    }
+                    ActiveMediaInputSlot(
+                        state = state,
+                        hasCameraPermission = hasCameraPermission,
+                        engine = engine,
+                        onSeek = { engine.seekFile(it) },
+                        onChangeFile = { launchMediaPicker(filePickerLauncher) },
+                        onToggleCamera = {
+                            handleToggleCamera(
+                                context = context,
+                                state = state,
+                                engine = engine,
+                                cameraPermissionLauncher = cameraPermissionLauncher
+                            )
+                        }
+                    )
 
                     ShiftStatusBanner(
+                        isRunning = state.isRunning,
                         isTriggered = state.isEventTriggered,
                         currentDistance = state.currentDistance,
                         threshold = state.threshold
                     )
 
                     // 2. Audio Mel Spectrogram underneath
-                    val spectrogramHeight = if (state.sourceMode == AudioSourceMode.FILE && state.isVideo) {
+                    val spectrogramHeight = if ((state.sourceMode == AudioSourceMode.FILE && state.isVideo) || isLiveCameraPreviewVisible) {
                         215.dp
                     } else if (isShortWindow) {
                         190.dp
@@ -380,56 +437,149 @@ private fun launchMediaPicker(launcher: androidx.activity.result.ActivityResultL
     )
 }
 
+private fun handleToggleRunning(
+    context: android.content.Context,
+    state: WorkbenchState,
+    engine: AudioWorkbenchEngine,
+    livePermissionsLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>,
+    filePickerLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>
+) {
+    if (state.isRunning) {
+        engine.stop()
+        return
+    }
+    when (state.sourceMode) {
+        AudioSourceMode.LIVE -> handleSelectSource(
+            mode = AudioSourceMode.LIVE,
+            context = context,
+            state = state,
+            engine = engine,
+            livePermissionsLauncher = livePermissionsLauncher,
+            filePickerLauncher = filePickerLauncher
+        )
+        AudioSourceMode.FILE -> {
+            if (state.loadedFileName == null) {
+                launchMediaPicker(filePickerLauncher)
+            } else {
+                engine.start(AudioSourceMode.FILE)
+            }
+        }
+    }
+}
+
+private fun handleToggleCamera(
+    context: android.content.Context,
+    state: WorkbenchState,
+    engine: AudioWorkbenchEngine,
+    cameraPermissionLauncher: androidx.activity.result.ActivityResultLauncher<String>
+) {
+    val hasCam = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+    if (state.isCameraEnabled && hasCam) {
+        engine.setCameraEnabled(false)
+    } else if (hasCam) {
+        engine.setCameraEnabled(true)
+    } else {
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+}
+
 private fun handleSelectSource(
     mode: AudioSourceMode,
     context: android.content.Context,
-    state: com.example.commercialkiller.data.audio.WorkbenchState,
+    state: WorkbenchState,
     engine: AudioWorkbenchEngine,
-    micPermissionLauncher: androidx.activity.result.ActivityResultLauncher<String>,
+    livePermissionsLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>,
     filePickerLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>
 ) {
     when (mode) {
-        AudioSourceMode.MIC -> {
-            val hasPermission = ContextCompat.checkSelfPermission(
+        AudioSourceMode.LIVE -> {
+            val hasMic = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
 
-            if (hasPermission) {
-                engine.start(AudioSourceMode.MIC)
+            if (hasMic) {
+                engine.start(AudioSourceMode.LIVE)
             } else {
-                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                livePermissionsLauncher.launch(
+                    arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+                )
             }
         }
         AudioSourceMode.FILE -> {
             if (state.sourceMode == AudioSourceMode.FILE || state.loadedFileName == null) {
                 launchMediaPicker(filePickerLauncher)
             } else {
-                engine.start(mode)
+                engine.start(AudioSourceMode.FILE)
             }
-        }
-        AudioSourceMode.SYNTH -> {
-            engine.start(mode)
         }
     }
 }
 
 @Composable
+private fun ActiveMediaInputSlot(
+    state: WorkbenchState,
+    hasCameraPermission: Boolean,
+    engine: AudioWorkbenchEngine,
+    onSeek: (Float) -> Unit,
+    onChangeFile: () -> Unit,
+    onToggleCamera: () -> Unit
+) {
+    if (state.sourceMode == AudioSourceMode.FILE && state.isVideo && state.mediaUri != null) {
+        VideoPlayerCard(
+            uri = state.mediaUri,
+            fileName = state.loadedFileName ?: "",
+            isPlaying = state.isRunning,
+            positionMs = state.filePositionMs,
+            durationMs = state.fileDurationMs,
+            progress = state.fileProgress,
+            onSeek = onSeek,
+            onChangeFile = onChangeFile,
+            previousDescriptorProvider = { engine.getLastVisualDescriptor() },
+            onFrameSampled = { engine.onVideoFrameSampled(it) }
+        )
+    } else if (state.sourceMode == AudioSourceMode.FILE && state.loadedFileName != null) {
+        FilePlaybackCard(
+            fileName = state.loadedFileName,
+            positionMs = state.filePositionMs,
+            durationMs = state.fileDurationMs,
+            progress = state.fileProgress,
+            onSeek = onSeek,
+            onChangeFile = onChangeFile
+        )
+    } else if (state.sourceMode == AudioSourceMode.LIVE) {
+        LiveCameraCard(
+            isCameraActive = state.isCameraEnabled && hasCameraPermission,
+            isRunning = state.isRunning,
+            visualChangeScore = state.latestVisualDescriptor?.visualChangeScore ?: 0f,
+            videoFrameCount = state.videoFrameCount,
+            previousDescriptorProvider = { engine.getLastVisualDescriptor() },
+            onFrameSampled = { engine.onVideoFrameSampled(it) },
+            onToggleCamera = onToggleCamera
+        )
+    }
+}
+
+@Composable
 private fun ShiftStatusBanner(
+    isRunning: Boolean,
     isTriggered: Boolean,
     currentDistance: Float,
     threshold: Float
 ) {
-    val bgColor = if (isTriggered) Color(0xFFDC2626) else Color(0xFF1E293B)
-    val borderMod = if (isTriggered) {
+    val bgColor = if (isRunning && isTriggered) Color(0xFFDC2626) else Color(0xFF1E293B)
+    val borderMod = if (isRunning && isTriggered) {
         Modifier
     } else {
         Modifier.border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
     }
-    val statusText = if (isTriggered) {
-        "SHIFT DETECTED  Δ=%.4f > %.2f".format(currentDistance, threshold)
-    } else {
-        "STEADY SIGNAL   Δ=%.4f / τ=%.2f".format(currentDistance, threshold)
+    val statusText = when {
+        !isRunning -> "IDLE   TAP MIC / CAM OR FILE / VIDEO"
+        isTriggered -> "SHIFT DETECTED  Δ=%.4f > %.2f".format(currentDistance, threshold)
+        else -> "STEADY SIGNAL   Δ=%.4f / τ=%.2f".format(currentDistance, threshold)
     }
 
     Box(
@@ -443,7 +593,7 @@ private fun ShiftStatusBanner(
     ) {
         Text(
             text = statusText,
-            color = if (isTriggered) Color.White else Color(0xFF94A3B8),
+            color = if (isRunning && isTriggered) Color.White else Color(0xFF94A3B8),
             fontWeight = FontWeight.Bold,
             fontSize = 10.sp,
             lineHeight = 12.sp,
@@ -894,7 +1044,7 @@ private fun WorkbenchHeader(
 
         Spacer(modifier = Modifier.height(3.dp))
 
-        // Compact Source Mode Selector (SYNTH, MIC, FILE) with icons
+        // Compact Two-Mode Source Selector (MIC / CAM, FILE / VIDEO) with icons
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -909,21 +1059,22 @@ private fun WorkbenchHeader(
             ) {
                 AudioSourceMode.entries.forEach { mode ->
                     val isSelected = sourceMode == mode
+                    val label = when (mode) {
+                        AudioSourceMode.LIVE -> "MIC / CAM"
+                        AudioSourceMode.FILE -> "FILE / VIDEO"
+                    }
                     Row(
                         modifier = Modifier
+                            .semantics(mergeDescendants = true) {}
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (isSelected) Color(0xFF0284C7) else Color.Transparent)
                             .clickable { onSelectSource(mode) }
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                            .padding(horizontal = 10.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         when (mode) {
-                            AudioSourceMode.SYNTH -> SynthIcon(
-                                modifier = Modifier.size(12.dp),
-                                tint = if (isSelected) Color.White else Color(0xFF94A3B8)
-                            )
-                            AudioSourceMode.MIC -> MicIcon(
+                            AudioSourceMode.LIVE -> MicIcon(
                                 modifier = Modifier.size(12.dp),
                                 tint = if (isSelected) Color.White else Color(0xFF94A3B8)
                             )
@@ -933,7 +1084,7 @@ private fun WorkbenchHeader(
                             )
                         }
                         Text(
-                            text = mode.name,
+                            text = label,
                             color = if (isSelected) Color.White else Color(0xFF94A3B8),
                             fontSize = 10.sp,
                             lineHeight = 12.sp,
@@ -941,6 +1092,130 @@ private fun WorkbenchHeader(
                             maxLines = 1
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveCameraCard(
+    isCameraActive: Boolean,
+    isRunning: Boolean,
+    visualChangeScore: Float,
+    videoFrameCount: Long,
+    previousDescriptorProvider: () -> VisualFrameDescriptor?,
+    onFrameSampled: (VideoFrameSnapshot) -> Unit,
+    onToggleCamera: () -> Unit
+) {
+    if (isCameraActive) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Column(modifier = Modifier.padding(4.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(164.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isRunning) {
+                        CameraScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            sampleIntervalMs = 250L,
+                            previousDescriptorProvider = previousDescriptorProvider,
+                            onFrameSampled = onFrameSampled
+                        )
+                    } else {
+                        Text(
+                            text = "CAMERA IDLE",
+                            color = Color(0xFF64748B),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(22.dp)
+                        .padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "LIVE: MIC + CAM",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(end = 4.dp),
+                        fontSize = 10.sp
+                    )
+                    Text(
+                        text = "ΔV=%.2f  #%d".format(visualChangeScore, videoFrameCount),
+                        color = Color.LightGray,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.5.sp,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Button(
+                        onClick = onToggleCamera,
+                        modifier = Modifier
+                            .height(22.dp)
+                            .semantics(mergeDescendants = true) {},
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) {
+                        CameraIcon(modifier = Modifier.size(11.dp), tint = Color.White)
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("CAM OFF", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                }
+            }
+        }
+    } else {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(34.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "LIVE: MIC ONLY (AUDIO)",
+                    color = Color(0xFF94A3B8),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    maxLines = 1
+                )
+                Button(
+                    onClick = onToggleCamera,
+                    modifier = Modifier
+                        .height(22.dp)
+                        .semantics(mergeDescendants = true) {},
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                ) {
+                    CameraIcon(modifier = Modifier.size(11.dp), tint = Color.White)
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("CAM ON", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
         }
@@ -956,56 +1231,171 @@ private fun VideoPlayerCard(
     durationMs: Long,
     progress: Float,
     onSeek: (Float) -> Unit,
-    onChangeFile: () -> Unit
+    onChangeFile: () -> Unit,
+    previousDescriptorProvider: () -> VisualFrameDescriptor?,
+    onFrameSampled: (VideoFrameSnapshot) -> Unit
 ) {
+    val currentPrevProvider by rememberUpdatedState(previousDescriptorProvider)
+    val currentOnFrameSampled by rememberUpdatedState(onFrameSampled)
+
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
         shape = RoundedCornerShape(10.dp)
     ) {
         Column(modifier = Modifier.padding(4.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(164.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black),
-                contentAlignment = Alignment.Center
-            ) {
-                key(uri) {
+            key(uri) {
+                val currentIsPlaying by rememberUpdatedState(isPlaying)
+                val currentPositionMs by rememberUpdatedState(positionMs)
+
+                var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+                var surfaceRef by remember { mutableStateOf<Surface?>(null) }
+                var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
+                var isPrepared by remember { mutableStateOf(false) }
+                var videoAspectRatio by remember { mutableFloatStateOf(4f / 3f) }
+                var isDisposed by remember { mutableStateOf(false) }
+
+                fun releaseMediaResources() {
+                    isDisposed = true
+                    isPrepared = false
+                    try {
+                        mediaPlayer?.let { mp ->
+                            if (mp.isPlaying) mp.stop()
+                            mp.release()
+                        }
+                    } catch (ignored: Exception) {}
+                    mediaPlayer = null
+                    try {
+                        surfaceRef?.release()
+                    } catch (ignored: Exception) {}
+                    surfaceRef = null
+                    textureViewRef = null
+                }
+
+                DisposableEffect(uri) {
+                    onDispose {
+                        releaseMediaResources()
+                    }
+                }
+
+                LaunchedEffect(uri, isPlaying, isPrepared) {
+                    if (!isPlaying || !isPrepared) return@LaunchedEffect
+                    while (true) {
+                        val tv = textureViewRef
+                        if (tv != null && tv.isAvailable) {
+                            val bmp = tv.getBitmap(
+                                VideoFrameAnalyzer.THUMB_WIDTH,
+                                VideoFrameAnalyzer.THUMB_HEIGHT
+                            )
+                            if (bmp != null) {
+                                try {
+                                    val snapshot = withContext(Dispatchers.Default) {
+                                        VideoFrameAnalyzer.sampleBitmap(
+                                            source = bmp,
+                                            timestampMs = System.currentTimeMillis(),
+                                            previous = currentPrevProvider()
+                                        )
+                                    }
+                                    currentOnFrameSampled(snapshot)
+                                } finally {
+                                    if (!bmp.isRecycled) bmp.recycle()
+                                }
+                            }
+                        }
+                        delay(250L)
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(164.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
                     AndroidView(
                         factory = { ctx ->
-                            VideoView(ctx).apply {
-                                setVideoURI(uri)
-                                setOnPreparedListener { mp ->
-                                    mp.isLooping = true
-                                    // Mute VideoView audio so AudioWorkbenchEngine's AudioTrack remains
-                                    // the single audio source, preventing echo/double-audio
-                                    mp.setVolume(0f, 0f)
-                                    if (isPlaying) {
-                                        start()
+                            TextureView(ctx).apply {
+                                textureViewRef = this
+                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(
+                                        st: SurfaceTexture,
+                                        width: Int,
+                                        height: Int
+                                    ) {
+                                        val surface = Surface(st)
+                                        surfaceRef = surface
+                                        try {
+                                            val mp = MediaPlayer().apply {
+                                                setSurface(surface)
+                                                setDataSource(ctx, uri)
+                                                isLooping = true
+                                                // Mute MediaPlayer audio so AudioWorkbenchEngine's AudioTrack remains
+                                                // the single audio clock, preventing echo/double-audio
+                                                setVolume(0f, 0f)
+                                                setOnVideoSizeChangedListener { _, vw, vh ->
+                                                    if (vw > 0 && vh > 0) {
+                                                        videoAspectRatio = vw.toFloat() / vh.toFloat()
+                                                    }
+                                                }
+                                                setOnPreparedListener { preparedMp ->
+                                                    if (isDisposed) return@setOnPreparedListener
+                                                    isPrepared = true
+                                                    if (currentPositionMs > 0L) {
+                                                        preparedMp.seekTo(currentPositionMs.toInt())
+                                                    }
+                                                    if (currentIsPlaying) {
+                                                        preparedMp.start()
+                                                    }
+                                                }
+                                                setOnErrorListener { _, _, _ ->
+                                                    isPrepared = false
+                                                    true
+                                                }
+                                                prepareAsync()
+                                            }
+                                            mediaPlayer = mp
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                            surface.release()
+                                            surfaceRef = null
+                                        }
                                     }
+
+                                    override fun onSurfaceTextureSizeChanged(
+                                        st: SurfaceTexture,
+                                        width: Int,
+                                        height: Int
+                                    ) {}
+
+                                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                        releaseMediaResources()
+                                        return true
+                                    }
+
+                                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                                 }
                             }
                         },
-                        update = { view ->
-                            val diff = kotlin.math.abs(view.currentPosition - positionMs)
-                            if (diff > 600) {
-                                view.seekTo(positionMs.toInt())
-                            }
-                            if (isPlaying) {
-                                if (!view.isPlaying) {
-                                    view.start()
-                                }
-                            } else {
-                                if (view.isPlaying) {
-                                    view.pause()
-                                }
+                        update = {
+                            if (isPrepared) {
+                                val mp = mediaPlayer ?: return@AndroidView
+                                try {
+                                    val diff = kotlin.math.abs(mp.currentPosition - positionMs)
+                                    if (diff > 600) {
+                                        mp.seekTo(positionMs.toInt())
+                                    }
+                                    if (isPlaying) {
+                                        if (!mp.isPlaying) mp.start()
+                                    } else {
+                                        if (mp.isPlaying) mp.pause()
+                                    }
+                                } catch (ignored: Exception) {}
                             }
                         },
-                        onRelease = { view ->
-                            view.stopPlayback()
-                        },
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .aspectRatio(videoAspectRatio.coerceIn(0.5f, 2.5f), matchHeightConstraintsFirst = true)
                     )
                 }
             }

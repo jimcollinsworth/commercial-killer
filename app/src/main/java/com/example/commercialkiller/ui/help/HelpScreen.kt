@@ -238,22 +238,15 @@ fun HelpScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "• SYNTH (Simulated Broadcast)",
-                            description = "Synthesizes acoustic TV broadcast test waveforms: multi-formant speech (F1/F2/F3), 200 ms silence gaps, and compressed commercial jingle pods."
+                            title = "• MIC / CAM (Live Microphone & Camera)",
+                            description = "Captures live room audio and optional CameraX preview frames (sampled at 64x36) for real-time TV speaker and screen monitoring."
                         )
 
                         Spacer(modifier = Modifier.height(6.dp))
 
                         HelpSubItem(
-                            title = "• MIC (Live Microphone)",
-                            description = "Captures live ambient audio from device microphone for room testing against TV speakers."
-                        )
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        HelpSubItem(
-                            title = "• FILE (Local Multi-Format Audio & Video)",
-                            description = "Decodes and plays local audio and video files (WAV, MP3, AAC, M4A, FLAC, OGG, OPUS, MP4) for benchmark testing."
+                            title = "• FILE / VIDEO (Local Multi-Format Audio & Video)",
+                            description = "Decodes and plays local audio and video files (WAV, MP3, AAC, M4A, FLAC, OGG, OPUS, MP4) with synchronized video frame sampling."
                         )
                     }
                 }

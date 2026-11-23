@@ -982,6 +982,61 @@
   - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), LLVM `llvm-objdump.exe`, and `android` CLI (`screen capture`, `layout --no-idle`)
   - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
 
+## 2026-11-23: Two-Mode MIC/CAM & FILE/VIDEO Streams, Live Video Sampling & Android device-ai Skills (v2.4)
+
+> [!NOTE] User Instructions & Guidance:
+> - *"remove the synth, we should have just 2 options either mic/camera or file/video. it's too misleading to always jump into synth and doesn't serve any purpose. what other future tasks have been defined for he project /plan"*
+> - *"Next steps - need to add video to stream, entire concept requires video along with audio, and then video only to unmute. Although there might be a reason to support audio only too, not sure) also want a timeline view of current recording, so we see the content being streamed but also the past segments as identified. Ever segment is the same visual length, we are only interested in the labeling and ends, even if the running time was long for that scene or ad. dont need much detail/resolution, for each frame, just want to visually see the differences and order/timeline. maybe fit the realtime data with labels, then a scrolling list of the events in the current recording session - the most recent at top, oldest off the screen on the bottom. Each event in the list has a concise visual view of the audio and video. retain this list of events after recording so we can scroll thru."*
+> - *"go with the option A's . are we still using a jev like decision model approach locally for the video fusion too? can you read/install the android ai skills from here? https://github.com/android/skills/tree/main/device-ai install these for the commercial killer project, not sure if the nested directory is supported for skills/antigravity"*
+
+### Problem & Diagnosis
+1. **Misleading `SYNTH` Fallback**: Cold startup jumped directly into synthesized audio (`AudioSourceMode.SYNTH` / `runSimulatedLoop()`), obscuring whether real microphone, camera, or decoded media streams were active.
+2. **Audio-Only Input Gap for Visual Commercial/Unmute Fusion**: While TV commercials are muted, TV audio is absent, requiring an active visual frame stream in both `MIC / CAM` and `FILE / VIDEO` modes plus a retained session segment timeline.
+3. **Skill Directory Layout Constraint**: Antigravity discovers skills only one level deep inside `.agents/skills/` (`agy-customizations/docs/json_configs.md`), so nested repository paths under `device-ai/` are ignored unless flattened.
+
+### Architectural Decisions & Solution (`LLM-Gemini4Neon`)
+- **Two-Mode Input Pipeline & Option A Cold Launch**:
+  - Updated [`AudioWorkbenchEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngine.kt) to replace `AudioSourceMode` with 2 modes (`LIVE`, `FILE`), remove `runSimulatedLoop()` and `start(Boolean)`, default `sourceMode = AudioSourceMode.LIVE`, guard `start(FILE)` when `loadedAudio == null`, and track `isCameraEnabled`, `videoFrameCount`, `latestVisualDescriptor`, and `latestVideoThumbnail` via `setCameraEnabled()`, `getLastVisualDescriptor()`, and `onVideoFrameSampled()`.
+  - Updated `DisposableEffect(Unit)` in [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt) so cold launch defaults to `MIC / CAM` idle unless `RECORD_AUDIO` permission is already granted (enabling camera preview simultaneously if `CAMERA` is also granted), while `ShiftStatusBanner` displays `IDLE   TAP MIC / CAM OR FILE / VIDEO` at fixed `22.dp` height.
+- **JEPA-Like Visual Embedding Stream (`VideoFrameSampler.kt`)**:
+  - Created [`VideoFrameSampler.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/video/VideoFrameSampler.kt) defining `VisualFrameDescriptor` (`56` floats: `16` `lumaGrid`, `24` `8R+8G+8B` `colorHistogram`, `16` bottom-right `cornerRoiLuma`, `meanLuma`, `visualChangeScore`), `VideoFrameSnapshot` (`64×36` `RGB_565` `4,608`-byte `Bitmap`), and `VideoFrameAnalyzer` (`sampleYuvImageProxy`, `sampleBitmap`) — preserving a non-autoregressive System 1 embedding pipeline ready for Increment 3 audio+video fusion and `litert-runtime` (`CompiledModel` + `TensorBuffer`).
+  - Wired CameraX `Preview` + `ImageAnalysis` (`STRATEGY_KEEP_ONLY_LATEST`, `Size(320, 240)` `ResolutionStrategy`, `250 ms` sampling interval) in [`CameraScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/camera/CameraScreen.kt) on a single-thread executor with `clearAnalyzer()`, `unbindAll()`, and `shutdown()` cleanup, paired with a `CAM ON` / `CAM OFF` audio-only toggle in `LiveCameraCard` (`semantics(mergeDescendants = true)`).
+  - Migrated `VideoPlayerCard` in [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt) from `VideoView` to `TextureView` + muted `MediaPlayer` with preserved `aspectRatio` and `250 ms` `getBitmap(64, 36)` visual sampling.
+  - Replaced `SynthIcon` with `CameraIcon` in [`AppIcons.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/components/AppIcons.kt), updated [`HelpScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/HelpScreen.kt), and incremented [`app/build.gradle.kts`](file:///d:/projects/commercial-killer/app/build.gradle.kts) to `versionCode = 16`, `versionName = "2.4"`.
+- **Android `device-ai` Skills Installed (Flattened)**:
+  - Installed all 5 `device-ai` skills via `android.exe skills add --project=d:\projects\commercial-killer --agent=antigravity`: `appfunctions`, `litert-lm`, `litert-runtime`, `ml-kit-genai-prompt-api`, and `mlkit-agent-api` (`25` files, `271,440` bytes total, largest file `37,766` bytes).
+- **Deferred Increments Planned**:
+  - **Increment 2 (`v2.5`)**: Fixed-width equal-length Session Segment Timeline triggered on label transitions or sustained `>= 2s` visual scene cuts, newest-at-top, retained post-stop.
+  - **Increment 3 (`v2.6`)**: Cross-Modal Audio+Video Decision Fusion & Video-Only Unmute (`ProgramFingerprintCache`, `litert-runtime` option).
+
+### Verification Results
+- **Unit Tests & Build**:
+  - `findstr /S /I /N /C:SYNTH /C:runSimulatedLoop /C:SynthIcon app\src\*.kt`: 0 matches.
+  - `gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`: `BUILD SUCCESSFUL in 49s`, `42 actionable tasks: 42 executed`.
+  - **66/66** unit tests passed (`0` skipped, `0` failures, `0` errors) across `IrEmitterControllerTest` (4), `ProntoHexConverterTest` (3), `TvControlManagerTest` (4), `UsbIrDongleControllerTest` (3), `AudioClassifierEngineTest` (7), `AudioFileDecoderTest` (4), `AudioWorkbenchEngineTest` (12), `MelSpectrogramTest` (4), `SpectrogramComparatorTest` (4), `FrameDecisionEngineTest` (15), `VideoFrameAnalyzerTest` (4), and `MainScreenViewModelTest` (2).
+  - `zipalign.exe -c -P 16 -v 4 app-debug.apk`: `Verification successful`; `llvm-objdump.exe -p` on `libandroidx.graphics.path.so`, `libimage_processing_util_jni.so`, `libmediapipe_tasks_jni.so`, `libsurface_util_jni.so`: all `LOAD` segments `align 2**14`.
+- **Emulator (`Medium_Phone_API_36.1`, `emulator-5554`)**:
+  - `emulator_v2_4_live_mic_cam.png`: `MIC / CAM` `[291,181][525,283]`, `FILE / VIDEO` `[533,181][790,283]`, CameraX room preview, `LIVE: MIC + CAM`, `ΔV=0.00  #72`/`#79`, `CAM OFF`, `NO MEDIA: SILENCE`, `HOLD (NO MEDIA)`, `SAME 1.00`, `Silence / Transition Gap`.
+  - `emulator_v2_4_file_cbs_video.png` (`cbs_news_with_2005_commercial.mp4`, `TotalTime: 3866`): `TextureView` 4:3 frame, `00:05 / 00:24`, `MEDIA 100%`, `PROGRAM 97%`.
+  - `emulator_v2_4_file_empty_room.png` (`empty_room_mic_noise.mp4`, `TotalTime: 3216`): `00:06 / 00:15`, `NO MEDIA: AMBIENT`, `HOLD (NO MEDIA)`, `SAME 0.98`, `Ambient / Room Noise`.
+  - `android layout --device=emulator-5554 --no-idle`: `0 px` vertical drift across `cbs` and `empty_room` (`ShiftStatusBanner` `[84,875][560,907]`, `FrameDecisionBar` `[..,1555][..,1584]` / `[79,1612][..,1641]`, `ClassifierLabelsContent` `[..,1688][..,1717]`, `DistanceMeter` `[..,1763][..,1795]`, `EventConsoleCard` header `[63,1849][413,1878]`, `LazyColumn` `[79,1899][1001,2122]`).
+  - `dumpsys gfxinfo` (active emulator): `Total frames rendered: 2558`, `Janky frames: 1396 (54.57%)`, `50th percentile: 17ms`, `95th percentile: 46ms`, `99th percentile: 109ms`, `50th gpu percentile: 7ms`, `99th gpu percentile: 4950ms`; `dumpsys meminfo`: `TOTAL PSS: 123177`, `Native Heap: 14632`, `Dalvik Heap: 9868`, `Views: 11`, `ViewRootImpl: 1`.
+- **Pixel 8 (`42170DLJH001WS`)**:
+  - `adb.exe -s 42170DLJH001WS install -r app-debug.apk` (`Success`); `LaunchState: COLD`, `TotalTime: 1586`, `WaitTime: 1590`, `pidof`: `8182`, `versionCode=16`, `versionName=2.4`.
+  - `logcat`: `libmediapipe_tasks_jni.so ... ok`, CameraX `Preview` + `ImageAnalysis` (`1600x1200`, `rotationDegrees=90`), fallback heuristic `AudioClassifierEngine` (no `yamnet.tflite` in assets), `0` fatal/`AndroidRuntime`/16 KB warnings.
+  - `dumpsys meminfo`: `TOTAL PSS: 114986`, `Native Heap: 10335`, `Dalvik Heap: 6457`, `Views: 13`, `ViewRootImpl: 1`, `Activities: 1`; `dumpsys thermalservice`: `Thermal Status: 0`; `/proc/pressure/cpu`: `Permission denied`; `dumpsys gfxinfo`: `Total frames rendered: 1`, `50th..99th percentile: 1100ms`, `50th gpu percentile: 6ms` (`mWakefulness=Dozing`).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Step Count**: `2455` (`step_index` verified in `transcript.jsonl`)
+- **Log Path**: `.system_generated/logs/transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Gradle / JDK 21 JBR (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), LLVM `llvm-objdump.exe`, and `android` CLI (`skills add`, `screen capture`, `layout --no-idle`)
+  - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
+
 ---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 

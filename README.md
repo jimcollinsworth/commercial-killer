@@ -1,6 +1,6 @@
 # Commercial Killer — Audio/Video AI Workbench
 
-An on-device experimentation workbench and real-time processing engine for Android (v2.3.01). Commercial Killer ingests live camera/microphone streams or local files, computes real-time Mel-spectrograms (40–128 bands), executes parallel MediaPipe / heuristic audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to distinguish broadcast TV/radio media from silence/ambient environments (`is_media`), detect commercial breaks (`is_commercial`), track scene continuity (`is_same_scene`), and trigger TV muting with zero cloud dependencies.
+An on-device experimentation workbench and real-time processing engine for Android (v2.4). Commercial Killer ingests live microphone + CameraX streams (`MIC / CAM`) or local video/audio files (`FILE / VIDEO`), computes real-time Mel-spectrograms (40–128 bands), samples `250 ms` visual frame descriptors, executes parallel MediaPipe / heuristic audio classification, and evaluates every 100 ms frame with a non-autoregressive Fast Local Android Decision Model (`FrameDecisionEngine`) to distinguish broadcast TV/radio media from silence/ambient environments (`is_media`), detect commercial breaks (`is_commercial`), track scene continuity (`is_same_scene`), and trigger TV muting with zero cloud dependencies.
 
 ## Core Features & Vision
 
@@ -20,7 +20,7 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - `is_same_scene`: Cosine similarity comparison between consecutive Mel-spectrogram frames ($\vec{F}_t$ vs $\vec{F}_{t-1}$) tracking shot duration and cuts/min over a 60-second window
   - Hysteresis-gated `MUTE`, `UNMUTE`, and `HOLD` action outputs integrated into `TvControlManager`
 - **Real-Time Workbench Dashboard**:
-  - Synchronized top video display when processing video files
+  - Top visual input viewport supporting live CameraX `Preview` + `ImageAnalysis` (`MIC / CAM`, with `CAM ON` / `CAM OFF` audio-only toggle) and `TextureView` + muted `MediaPlayer` video playback (`FILE / VIDEO`)
   - High-resolution graphical Mel-spectrogram waterfall / heatmap
   - Fixed-height HUD layout (`ShiftStatusBanner` 22dp, `FrameDecisionBar` 48dp with single-line `MEDIA`/`NO MEDIA: SILENCE`/`NO MEDIA: AMBIENT`, `COMMERCIAL`/`PROGRAM`/`HOLD (NO MEDIA)`, `SAME`/`CUT` badges, 3-slot `ClassifierLabelsContent` 24dp, `DistanceMeterCard` 34dp, and `EventConsoleCard` 110dp)
   - Live classifier tag display and execution log console
@@ -30,7 +30,8 @@ An on-device experimentation workbench and real-time processing engine for Andro
 - `app/src/main/java/com/example/commercialkiller/`
   - `MainActivity.kt`: Entry activity with edge-to-edge UI scaffold (`edge-to-edge`).
   - `Navigation.kt` & `NavigationKeys.kt`: Navigation graph and scene transitions.
-  - `data/audio/AudioWorkbenchEngine.kt`: Core engine managing audio pipelines (`SYNTH`, `MIC`, `FILE`), `100 ms` inspection loops (including `MIC`/`UNPROCESSED` live priority and `intervalMs` throttling), and automated muting triggers.
+  - `data/audio/AudioWorkbenchEngine.kt`: Core engine managing dual audio+video pipelines (`MIC / CAM` as `AudioSourceMode.LIVE` and `FILE / VIDEO` as `AudioSourceMode.FILE`), `100 ms` audio inspection loops (`MIC`/`UNPROCESSED` live priority and `intervalMs` throttling), `250 ms` `VisualFrameDescriptor` state, and automated muting triggers.
+  - `data/video/VideoFrameSampler.kt`: Non-autoregressive visual descriptor extractor computing a `56`-float `VisualFrameDescriptor` (`16` luma grid, `24` RGB histogram, `16` bottom-right ROI luma) plus a `64×36` `RGB_565` `4,608`-byte thumbnail from CameraX YUV frames and `TextureView` video bitmaps.
   - `data/audio/AudioFileDecoder.kt`: Multi-format audio/video file decoder (WAV, MP3, AAC, M4A, FLAC, OGG, OPUS, MP4) and 16 kHz mono resampler.
   - `data/audio/AudioClassifierEngine.kt`: Parallel on-device audio classifier supporting open-weights Hugging Face models via LiteRT / TFLite, plus acoustic fallback with pre-emphasized pitch-correlation room/ambient noise rejection (`maxPitchCorr < 0.30f && rms < 0.14f`).
   - `data/audio/MelSpectrogramCalculator.kt`: Configurable 40–128 band Mel-spectrogram calculation (default 80) using Cooley-Tukey FFT.
@@ -45,9 +46,10 @@ An on-device experimentation workbench and real-time processing engine for Andro
   - `ui/components/SpectrogramVisualizer.kt`: Canvas visualizers for oscilloscope waveforms, Mel-spectrogram waterfall, and distance meter.
   - `ui/ir/IrSettingsScreen.kt`: Dedicated IR hardware & Webhook test screen with Code Set selector, Test & Step pairing wizard, and smart TV automation console.
   - `ui/help/HelpScreen.kt`: System Help & Details screen explaining signal processing, Mel-spectrogram math, `FrameDecisionEngine` queries, IR signals, webhooks, and workbench modes.
-  - `ui/camera/CameraScreen.kt`: CameraX surface preview and frame capture pipeline (`camerax`).
-  - `ui/main/MainScreen.kt`: Jetpack Compose adaptive workbench dashboard (`adaptive`) featuring `FrameDecisionBar` HUD badges and `SpectrogramSettingsSheet`.
+  - `ui/camera/CameraScreen.kt`: CameraX `Preview` and `ImageAnalysis` (`Size(320, 240)`, `250 ms` interval, `STRATEGY_KEEP_ONLY_LATEST`) capture pipeline (`camerax`).
+  - `ui/main/MainScreen.kt`: Jetpack Compose adaptive workbench dashboard (`adaptive`) featuring two-mode `MIC / CAM` and `FILE / VIDEO` selection, `LiveCameraCard` (`CAM ON`/`CAM OFF` toggle), `TextureView` + `MediaPlayer` `VideoPlayerCard`, `FrameDecisionBar` HUD badges, and `SpectrogramSettingsSheet`.
   - `theme/`: Material Design 3 adaptive theme setup (`adaptive`, `styles`).
+  - `.agents/skills/`: Installed Antigravity project skills (`appfunctions`, `litert-lm`, `litert-runtime`, `ml-kit-genai-prompt-api`, `mlkit-agent-api`).
 - `app/src/test/`: Automated unit tests for signal processing, decoding, classification, TV/IR control, and `FrameDecisionEngine` (`testing-setup`).
 - `gradle/libs.versions.toml`: Version catalog.
 
