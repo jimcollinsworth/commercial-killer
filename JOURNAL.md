@@ -998,7 +998,7 @@
 - **Two-Mode Input Pipeline & Option A Cold Launch**:
   - Updated [`AudioWorkbenchEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngine.kt) to replace `AudioSourceMode` with 2 modes (`LIVE`, `FILE`), remove `runSimulatedLoop()` and `start(Boolean)`, default `sourceMode = AudioSourceMode.LIVE`, guard `start(FILE)` when `loadedAudio == null`, and track `isCameraEnabled`, `videoFrameCount`, `latestVisualDescriptor`, and `latestVideoThumbnail` via `setCameraEnabled()`, `getLastVisualDescriptor()`, and `onVideoFrameSampled()`.
   - Updated `DisposableEffect(Unit)` in [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt) so cold launch defaults to `MIC / CAM` idle unless `RECORD_AUDIO` permission is already granted (enabling camera preview simultaneously if `CAMERA` is also granted), while `ShiftStatusBanner` displays `IDLE   TAP MIC / CAM OR FILE / VIDEO` at fixed `22.dp` height.
-- **JEPA-Like Visual Embedding Stream (`VideoFrameSampler.kt`)**:
+- **Jev-Style Visual Embedding Stream (`VideoFrameSampler.kt`)**:
   - Created [`VideoFrameSampler.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/video/VideoFrameSampler.kt) defining `VisualFrameDescriptor` (`56` floats: `16` `lumaGrid`, `24` `8R+8G+8B` `colorHistogram`, `16` bottom-right `cornerRoiLuma`, `meanLuma`, `visualChangeScore`), `VideoFrameSnapshot` (`64×36` `RGB_565` `4,608`-byte `Bitmap`), and `VideoFrameAnalyzer` (`sampleYuvImageProxy`, `sampleBitmap`) — preserving a non-autoregressive System 1 embedding pipeline ready for Increment 3 audio+video fusion and `litert-runtime` (`CompiledModel` + `TensorBuffer`).
   - Wired CameraX `Preview` + `ImageAnalysis` (`STRATEGY_KEEP_ONLY_LATEST`, `Size(320, 240)` `ResolutionStrategy`, `250 ms` sampling interval) in [`CameraScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/camera/CameraScreen.kt) on a single-thread executor with `clearAnalyzer()`, `unbindAll()`, and `shutdown()` cleanup, paired with a `CAM ON` / `CAM OFF` audio-only toggle in `LiveCameraCard` (`semantics(mergeDescendants = true)`).
   - Migrated `VideoPlayerCard` in [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt) from `VideoView` to `TextureView` + muted `MediaPlayer` with preserved `aspectRatio` and `250 ms` `getBitmap(64, 36)` visual sampling.
@@ -1035,6 +1035,65 @@
 - **Empirical System Resources Utilized**:
   - Gradle / JDK 21 JBR (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
   - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), LLVM `llvm-objdump.exe`, and `android` CLI (`skills add`, `screen capture`, `layout --no-idle`)
+  - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
+
+---
+
+## 2026-11-23: Jev-Style Multimodal Decision Model, Video-Only Muted Unmute, Stage 2 LiteRT-LM Hook & Retained Segment Timeline (v2.5)
+
+> [!NOTE] User Instructions & Guidance:
+> - *"how will the jev like decision model work with video/audio /plan"*
+> - *"wtf? jepa?"*
+> - *"here's some additional info: For a 100% local, multimodal Jev-style decision pipeline on Android, the best approach is Google AI Edge LiteRT-LM paired with Gemma 3n (or Gemma 4 E2B) and constrained 1-token decoding... are we using an ominidirectional embedding head? what do you think?"*
+> - *"lets do option 2, simpler approach first. go ahead and do all the remaining tasks, all 3 phases, test using a test commercial/media file, note that there should only be a dozen or so transitions for a show, definitely not hundreds. simple edits back and forth in a scene from different angles, should not trigger a change. make sure we test for that and adjust /android-tips-and-debugging"*
+
+### Problem & Diagnosis
+1. **Cross-Modal Blindness While TV Is Muted**: When TV audio is muted by IR/Webhook during a commercial break, the room microphone receives silence or unrelated ambient speech, preventing unmute transitions unless the visual stream tracks program return against a frozen pre-break visual signature.
+2. **Shot / Reverse-Shot Over-Segmentation**: Without an intra-scene multi-angle bank and macro boundary hysteresis, alternating A/B camera cuts and brief speech pauses inside a broadcast program fragment timeline segments into tens or hundreds of spurious rows.
+3. **Live Emulator Tuning Issues Found Before Final Pass**:
+   - Positive-vector cosine similarity on `lumaGrid` exhibited an artificial `~0.80–0.90` mathematical floor even between unrelated scenes, which paired with an ungated `+0.25f` cadence bonus produced a false `RET 85%` unmute signal on a beige bathroom commercial shot at `00:20`.
+   - `CONFIRM_NO_MEDIA_MS = 2_000L` fragmented the initial broadcast news segment on a natural 2 s speech pause while video was active, and prepending items at index `0` left `LazyColumn` anchored to older rows instead of revealing newest entries at the top.
+   - Carrying commercial-break `cutTimestampsMs` / `novelVisualCutTimestampsMs` and clearing `activeSceneAngles` across `UNMUTE` caused a false `#4 Auto-Mute Triggered` at `00:39` when the weather-map studio angle reappeared after program return.
+
+### Architectural Decisions & Solution (`LLM-Gemini4Neon`)
+- **Terminology Clarification (`Jev` vs `JEPA`)**: Confirmed `Jev` designates TypeSafe AI non-autoregressive System 1 typed decision queries returning structured verdicts/scores without prose generation; removed 3 erroneous `JEPA` strings from [`ROADMAP.md`](file:///d:/projects/commercial-killer/ROADMAP.md), [`JOURNAL.md`](file:///d:/projects/commercial-killer/JOURNAL.md), and `walkthrough.md` (`0` remaining matches confirmed by `findstr`).
+- **Phase 1 — Visual Descriptor Expansion & `ProgramFingerprintCache`**:
+  - Extended [`VideoFrameSampler.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/video/VideoFrameSampler.kt) to `72` floats (`16` `lumaGrid`, `24` `8R+8G+8B` `colorHistogram`, `16` bottom-right `cornerRoiLuma`, `16` bottom-left `bottomLeftRoiLuma`, `isBlackFrame`, `visualChangeScore`), added allocation-free `sampleIntoReusableBuffer(...)`, and switched luma comparison from `cosineDistance` to spatial mean-absolute-difference `lumaL1Distance` (`0.50f * lumaSim + 0.50f * histSim`).
+  - Created [`ProgramFingerprintCache.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/ProgramFingerprintCache.kt) maintaining an active `6`-angle bank (`KNOWN_ANGLE_SIMILARITY_THRESHOLD = 0.78f`), a `60`-frame (`15 s`) pre-break ring with `2 s` pre-mute rollback, greedy `K = 5` prototype freezing, dual-corner stability checks (`variance < 0.015f`, `contrast >= 0.08f`), and restoration of frozen prototypes into `activeSceneAngles` during `unfreeze()`.
+- **Phase 2 & 3 — 3-Modality `FrameDecisionEngine`, `SessionSegmentTracker`, & Stage 2 `LiteRtLmDecisionVerifier`**:
+  - Extended [`FrameDecisionEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/FrameDecisionEngine.kt) across `DecisionModality { AUDIO_ONLY, AUDIO_VIDEO, VIDEO_ONLY_MUTED }`, gated cadence (`sProto >= 0.70f`) with `PROGRAM_RETURN_UNMUTE_THRESHOLD = 0.80f` (`MIN_MUTE_HOLD_MS = 4_000L`, `UNMUTE_CONSECUTIVE_VIDEO_FRAMES = 6`, `MAX_MUTE_WATCHDOG_MS = 240_000L`), dampened matched pre-break prototypes (`>= 0.82f`), and added `clearBreakTrackingOnUnmute()` to reset break cut windows, streaks, and `hasInitializedStart`.
+  - Created [`SessionSegmentTracker.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/SessionSegmentTracker.kt) aggregating `100 ms` ticks into equal-width `SessionSegment` entries (`PROGRAM`, `COMMERCIAL`, `NO_MEDIA`) with `16×16` Mel strips and settled `64×36` thumbnails, `CONFIRM_NO_MEDIA_VIDEO_MS = 5_000L`, `< 3_000L` initial `NO_MEDIA` placeholder replacement, and `finalizeActiveSegment()` retention on stop.
+  - Created [`LiteRtLmDecisionVerifier.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/LiteRtLmDecisionVerifier.kt) using `com.google.ai.edge.litertlm:litertlm-android:0.18.0` ([`libs.versions.toml`](file:///d:/projects/commercial-killer/gradle/libs.versions.toml), `versionCode = 17`, `versionName = "2.5"` in [`app/build.gradle.kts`](file:///d:/projects/commercial-killer/app/build.gradle.kts), optional `libvndksupport.so`/`libOpenCL.so` + `READ_MEDIA_VIDEO` in [`AndroidManifest.xml`](file:///d:/projects/commercial-killer/app/src/main/AndroidManifest.xml)) with `Backend.GPU()` -> `Backend.CPU()` fallback on external `.litertlm` paths and Stage-1-only fallback when absent.
+  - Wired engine, intent extras (`--ez auto_mute`, `--ez simulate_muted_break`, `prepareForExternalFileIntent()`, `close()` in `onDestroy()` when `isFinishing`), ping-pong 2-slot `Bitmap` waterfall + `MiniMelStrip` ([`SpectrogramVisualizer.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/components/SpectrogramVisualizer.kt)), reusable `ARGB_8888` `Bitmap` + `IntArray` video sampling buffer, `SessionTimelineCard` (`[TIMELINE | LOG]`, `LazyListState` newest-at-top pinning), and `Simulate TV Mute` toggle ([`AudioWorkbenchEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngine.kt), [`MainActivity.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/MainActivity.kt), [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt), [`HelpScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/help/HelpScreen.kt)).
+
+### Verification Results
+- **Unit Tests & Build (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)**:
+  - `BUILD SUCCESSFUL in 30s` (`42 actionable tasks: 42 executed`), `0` Kotlin compiler warnings across modified files.
+  - **83/83** unit tests passed (`0` failures, `0` errors, `0` skipped) across all 15 XML suites: `IrEmitterControllerTest` (4), `ProntoHexConverterTest` (3), `TvControlManagerTest` (4), `UsbIrDongleControllerTest` (3), `AudioClassifierEngineTest` (7), `AudioFileDecoderTest` (4), `AudioWorkbenchEngineTest` (12), `MelSpectrogramTest` (4), `SpectrogramComparatorTest` (4), `FrameDecisionEngineTest` (19), `LiteRtLmDecisionVerifierTest` (2), `ProgramFingerprintCacheTest` (3), `SessionSegmentTrackerTest` (6), `VideoFrameAnalyzerTest` (6), and `MainScreenViewModelTest` (2).
+- **16 KB Page Size Alignment**:
+  - `zipalign.exe -c -P 16 -v 4 app\build\outputs\apk\debug\app-debug.apk`: `Verification successful`.
+  - `llvm-objdump.exe -p` on extracted `lib/arm64-v8a/liblitertlm_jni.so`: all 3 `LOAD` segments aligned at `align 2**14`.
+- **Multi-Angle Broadcast Clip Verification (`emulator-5554`, `test_assets/show_angles_ad_return.mp4`, `43.06 s`, `2,445,398` bytes, gitignored)**:
+  - Verified strictly 3 macro segments across intra-scene A↔B camera cuts (`0–15 s`, `28.05–43.06 s`), muted commercial break (`15–28.05 s`), and post-stop retention:
+    - `#1 PROGRAM` (`00:00-00:14`, `14s`, `97–99%`) across 6 A↔B studio cuts and anchor speech pause.
+    - `#2 COMMERCIAL` (`00:14-00:28`, `14s`, `TV MUTED [WEBHOOK]`, `VID-ONLY (MUTED)`, amber `RET 40%` on beige bathroom shot and `RET 32%` on `CUT 0.15`).
+    - `#3 PROGRAM` (`00:28-00:41`, `12s`, `Program Return Unmute`, `92%`, `TV ACTIVE [WEBHOOK]`, zero false `#4` mute through `00:42` `IDLE`).
+  - `android.exe layout --device=emulator-5554 --no-idle`: `0 px` vertical drift across running, muted, silence, and `IDLE` states (`ShiftStatusBanner` `y=875..907`, `FrameDecisionBar` rows `y=1450..1479` & `y=1507..1536`, `ClassifierLabelsContent` `y=1583..1612`, `DistanceMeter` `y=1658..1690`, `SessionTimelineCard` header `y=1753..1782`, `LazyColumn` `y=1809..2125`).
+  - `dumpsys gfxinfo`: `Total frames rendered: 1201`, `Janky frames: 805 (67.03%)`, `50th percentile: 18ms`, `95th percentile: 40ms`, `99th percentile: 77ms`, `50th gpu percentile: 11ms`, `99th gpu percentile: 4950ms`; `dumpsys meminfo`: `TOTAL PSS: 135244` KB (`Native Heap: 13536`, `Dalvik Heap: 10028`, `Views: 13`, `ViewRootImpl: 1`).
+- **Physical Pixel 8 (`42170DLJH001WS`) Deploy & Profiling**:
+  - `adb.exe -s 42170DLJH001WS install -r app-debug.apk`: `Success`; `LaunchState: COLD`, `TotalTime: 1490`, `WaitTime: 1495`, `pidof`: `11669`.
+  - `logcat`: `uses_libraries=libOpenCL.so`, `libmediapipe_tasks_jni.so ... ok`, `c2.android.aac.decoder` decoded `16000 Hz` mono stream, `AudioTrack` initialized, `0` fatal/`AndroidRuntime`/16 KB warnings.
+  - `dumpsys meminfo`: `TOTAL PSS: 121538` KB (`Native Heap: 10648`, `Java Heap: 18432`, `Graphics: 8128`, `Views: 9`, `ViewRootImpl: 1`); `dumpsys thermalservice`: `Thermal Status: 0`; `dumpsys gfxinfo`: `Pipeline=Skia (Vulkan)`, `50th gpu percentile: 3ms` (`visibility=8`).
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Step Count**: `2997` (`step_index` verified in `transcript.jsonl`)
+- **Log Path**: `.system_generated/logs/transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Gradle / JDK 21 JBR (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), LLVM `llvm-objdump.exe`, `ffmpeg.exe`, and `android` CLI (`layout --no-idle`)
   - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
 
 ---

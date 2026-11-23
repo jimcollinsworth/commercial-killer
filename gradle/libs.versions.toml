@@ -16,6 +16,7 @@ lifecycleViewmodelNav3 = "2.10.0"
 camerax = "1.4.1"
 adaptive = "1.0.1"
 mediapipeTasksAudio = "0.10.35"
+litertLm = "0.18.0"
 
 [libraries]
 camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
@@ -46,6 +47,7 @@ androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runt
 androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "nav3Core" }
 androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelNav3" }
 mediapipe-tasks-audio = { module = "com.google.mediapipe:tasks-audio", version.ref = "mediapipeTasksAudio" }
+litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertLm" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

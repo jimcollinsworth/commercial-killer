@@ -3,6 +3,8 @@
 package com.example.commercialkiller.data.decision
 
 import com.example.commercialkiller.data.audio.ClassifierScore
+import com.example.commercialkiller.data.video.VideoFrameAnalyzer
+import com.example.commercialkiller.data.video.VisualFrameDescriptor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -470,5 +472,250 @@ class FrameDecisionEngineTest {
         assertEquals(MediaEnvironment.AMBIENT_NOISE, hvacDecision.mediaEnvironment)
         assertFalse(hvacDecision.isCommercial)
         assertEquals(TvActionDecision.HOLD, hvacDecision.recommendedAction)
+    }
+
+    private fun testVisualDescriptor(
+        mode: String,
+        timestampMs: Long,
+        previous: VisualFrameDescriptor? = null
+    ): VisualFrameDescriptor {
+        val width = 64
+        val height = 36
+        val pixels = IntArray(width * height) { idx ->
+            val x = idx % width
+            val y = idx / width
+            when (mode) {
+                "ANGLE_A" -> if (x < width / 2) 0xFF1D4ED8.toInt() else 0xFF334155.toInt()
+                "ANGLE_B" -> if (y < height / 2) 0xFF15803D.toInt() else 0xFF475569.toInt()
+                else -> if ((x + y) % 2 == 0) 0xFFEF4444.toInt() else 0xFFFACC15.toInt()
+            }
+        }
+        if (mode != "AD") {
+            for (y in (height * 3) / 4 until height) {
+                for (x in (width * 3) / 4 until width) {
+                    pixels[y * width + x] = if (y >= height - 4 && x >= width - 6) {
+                        0xFFFFFFFF.toInt()
+                    } else {
+                        0xFF0F172A.toInt()
+                    }
+                }
+            }
+        }
+        return VideoFrameAnalyzer.computeDescriptorFromArgbPixels(
+            pixels = pixels,
+            width = width,
+            height = height,
+            timestampMs = timestampMs,
+            previous = previous
+        )
+    }
+
+    @Test
+    fun `AUDIO_VIDEO dampens borderline speech alerts on known A-B angles and fuses ad break MUTE`() {
+        val engine = FrameDecisionEngine()
+        val mediaVec = speechFormantVector(80)
+        var prevDesc: VisualFrameDescriptor? = null
+
+        // Learn baseline across 12 ticks (t = 0..2750 ms) alternating Angle A and Angle B
+        for (i in 0 until 12) {
+            val t = i * 250L
+            val desc = testVisualDescriptor(if ((i / 3) % 2 == 0) "ANGLE_A" else "ANGLE_B", t, prevDesc)
+            prevDesc = desc
+            val d = engine.evaluateFrame(
+                melEnergies = mediaVec,
+                classifierTags = speechTags(),
+                shiftDistance = 0.02f,
+                timestampMs = t,
+                visualDescriptor = desc,
+                isTvMuted = false
+            )
+            assertEquals(DecisionModality.AUDIO_VIDEO, d.decisionModality)
+            assertFalse(d.isCommercial)
+        }
+
+        // Borderline energetic dialogue back on known Angle A should stay PROGRAM thanks to dampening
+        val energeticTags = listOf(
+            ClassifierScore("Music / Sound Bed", 0.76f),
+            ClassifierScore("Broadcast Content", 0.60f),
+            ClassifierScore("Dialogue / Speech", 0.30f)
+        )
+        val backToAngleA = testVisualDescriptor("ANGLE_A", 3_000L, prevDesc)
+        val damped = engine.evaluateFrame(
+            melEnergies = uniformVector(80, 0.72f),
+            classifierTags = energeticTags,
+            shiftDistance = 0.04f,
+            timestampMs = 3_000L,
+            visualDescriptor = backToAngleA,
+            isTvMuted = false
+        )
+        assertTrue(damped.isKnownSceneAngle)
+        assertFalse("Known program angle + bug intact should dampen borderline commercial score (${damped.commercialScore})", damped.isCommercial)
+
+        // Sudden commercial visual departure + lost watermark + moderate ad music crosses >= 0.75 -> MUTE
+        val adVec = orthogonalCommercialVector(80)
+        val adDesc = testVisualDescriptor("AD", 3_250L, backToAngleA)
+        val mutedDecision = engine.evaluateFrame(
+            melEnergies = adVec,
+            classifierTags = energeticTags,
+            shiftDistance = 0.45f,
+            timestampMs = 3_250L,
+            visualDescriptor = adDesc,
+            isTvMuted = false
+        )
+        assertTrue("Expected visual divergence to boost commercial score >= 0.75, got ${mutedDecision.commercialScore}", mutedDecision.isCommercial)
+        assertEquals(TvActionDecision.MUTE, mutedDecision.recommendedAction)
+        assertTrue(mutedDecision.isProgramAnchorFrozen)
+    }
+
+    @Test
+    fun `VIDEO_ONLY_MUTED ignores room silence and speech and unmutes on sustained program return`() {
+        val engine = FrameDecisionEngine()
+        val mediaVec = speechFormantVector(80)
+        var prevDesc: VisualFrameDescriptor? = null
+
+        // Build 3s pre-break program baseline (12 frames before rollback + 8 ticks)
+        for (i in 0 until 20) {
+            val t = i * 250L
+            val desc = testVisualDescriptor(if ((i / 4) % 2 == 0) "ANGLE_A" else "ANGLE_B", t, prevDesc)
+            prevDesc = desc
+            engine.evaluateFrame(mediaVec, speechTags(), 0.02f, t, desc, isTvMuted = false)
+        }
+
+        // Trigger MUTE at t = 6_000 ms
+        val adStartDesc = testVisualDescriptor("AD", 6_000L, prevDesc)
+        val muteFrame = engine.evaluateFrame(
+            melEnergies = uniformVector(80, 0.80f),
+            classifierTags = commercialTags(),
+            shiftDistance = 0.40f,
+            timestampMs = 6_000L,
+            visualDescriptor = adStartDesc,
+            isTvMuted = false
+        )
+        assertEquals(TvActionDecision.MUTE, muteFrame.recommendedAction)
+        assertTrue(muteFrame.isProgramAnchorFrozen)
+
+        // While TV muted (6_250..9_500 < MIN_MUTE_HOLD_MS=4_000), pass room silence AND loud speech while visual shows ad
+        var lastDesc = adStartDesc
+        val silenceVec = FloatArray(80) { 0.01f }
+        for (step in 1..14) {
+            val t = 6_000L + step * 250L
+            val curAd = testVisualDescriptor("AD", t, lastDesc)
+            lastDesc = curAd
+            val tags = if (step % 2 == 0) silenceTags() else speechTags()
+            val vec = if (step % 2 == 0) silenceVec else mediaVec
+            val d = engine.evaluateFrame(vec, tags, 0.25f, t, curAd, isTvMuted = true)
+            assertEquals(DecisionModality.VIDEO_ONLY_MUTED, d.decisionModality)
+            assertTrue("Must remain isMedia=true in muted video-only mode despite room silence", d.isMedia)
+            assertTrue("Ad visual should keep return score below threshold, got ${d.programReturnScore}", d.programReturnScore < FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD)
+            assertEquals(TvActionDecision.HOLD, d.recommendedAction)
+        }
+
+        // Program visually returns (Angle B, even while audio is still muted silence!) after MIN_MUTE_HOLD_MS elapsed
+        var unmuted = false
+        for (retStep in 1..7) {
+            val t = 10_250L + retStep * 250L
+            val retDesc = testVisualDescriptor("ANGLE_B", t, lastDesc)
+            lastDesc = retDesc
+            val d = engine.evaluateFrame(silenceVec, silenceTags(), 0f, t, retDesc, isTvMuted = true)
+            assertEquals(DecisionModality.VIDEO_ONLY_MUTED, d.decisionModality)
+            assertTrue("Expected high return score on Angle B return, got ${d.programReturnScore}", d.programReturnScore >= FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD)
+            if (d.recommendedAction == TvActionDecision.UNMUTE) {
+                unmuted = true
+                assertFalse(d.isProgramAnchorFrozen)
+                assertEquals(6, retStep)
+                break
+            }
+        }
+        assertTrue("Expected VIDEO_ONLY_MUTED to emit UNMUTE after 6 consecutive return video frames", unmuted)
+    }
+
+    @Test
+    fun `AUDIO_ONLY fallback applies when visualDescriptor is null or stale beyond 1500 ms`() {
+        val engine = FrameDecisionEngine()
+        val staleDesc = testVisualDescriptor("AD", timestampMs = 100L)
+        val decision = engine.evaluateFrame(
+            melEnergies = speechFormantVector(80),
+            classifierTags = speechTags(),
+            shiftDistance = 0.02f,
+            timestampMs = 5_000L, // 4,900 ms older than staleDesc
+            visualDescriptor = staleDesc,
+            isTvMuted = true // Even with mute flag true, stale visual falls back to audio-only
+        )
+        assertEquals(DecisionModality.AUDIO_ONLY, decision.decisionModality)
+        assertTrue(decision.isMedia)
+        assertFalse(decision.isCommercial)
+    }
+
+    @Test
+    fun `UNMUTE clears break cadence history and restores pre-break scene angles`() {
+        val engine = FrameDecisionEngine()
+        val mediaVec = speechFormantVector(80)
+        var prevDesc: VisualFrameDescriptor? = null
+
+        // Build multi-angle pre-break baseline (Angle A + Angle B across 20 ticks)
+        for (i in 0 until 20) {
+            val t = i * 250L
+            val desc = testVisualDescriptor(if ((i / 4) % 2 == 0) "ANGLE_A" else "ANGLE_B", t, prevDesc)
+            prevDesc = desc
+            engine.evaluateFrame(mediaVec, speechTags(), 0.02f, t, desc, isTvMuted = false)
+        }
+
+        // Trigger MUTE on commercial break and simulate activeSceneAngles reset as done on macro transition
+        val adStartDesc = testVisualDescriptor("AD", 6_000L, prevDesc)
+        val muteFrame = engine.evaluateFrame(
+            melEnergies = uniformVector(80, 0.80f),
+            classifierTags = commercialTags(),
+            shiftDistance = 0.40f,
+            timestampMs = 6_000L,
+            visualDescriptor = adStartDesc,
+            isTvMuted = false
+        )
+        assertEquals(TvActionDecision.MUTE, muteFrame.recommendedAction)
+        engine.resetActiveSceneAngles()
+
+        // Inject rapid novel visual cuts during muted ad break (10_000..11_500ms)
+        val silenceVec = FloatArray(80) { 0.01f }
+        var lastDesc = adStartDesc
+        for (step in 1..6) {
+            val t = 6_000L + step * 500L
+            val curAd = testVisualDescriptor("AD", t, lastDesc).copy(visualChangeScore = 0.65f)
+            lastDesc = curAd
+            engine.evaluateFrame(silenceVec, silenceTags(), 0f, t, curAd, isTvMuted = true)
+        }
+
+        // Trigger sustained visual UNMUTE back on Angle A after MIN_MUTE_HOLD_MS
+        var unmutedDecision: FrameDecision? = null
+        for (retStep in 1..7) {
+            val t = 10_500L + retStep * 250L
+            val retDesc = testVisualDescriptor("ANGLE_A", t, lastDesc)
+            lastDesc = retDesc
+            val d = engine.evaluateFrame(silenceVec, silenceTags(), 0f, t, retDesc, isTvMuted = true)
+            if (d.recommendedAction == TvActionDecision.UNMUTE) {
+                unmutedDecision = d
+                break
+            }
+        }
+        assertTrue(unmutedDecision != null)
+        assertTrue("Expected restored activeSceneAngles >= 2 after UNMUTE", engine.programCache.activeAngleCount() >= 2)
+
+        // Post-unmute frame back on pre-break Angle B with borderline audio must have cleared cadence and not MUTE
+        val postUnmuteAngleB = testVisualDescriptor("ANGLE_B", 13_000L, lastDesc)
+        val borderlineTags = listOf(
+            ClassifierScore("Music / Sound Bed", 0.72f),
+            ClassifierScore("Broadcast Content", 0.65f),
+            ClassifierScore("Dialogue / Speech", 0.35f)
+        )
+        val postDecision = engine.evaluateFrame(
+            melEnergies = speechFormantVector(80),
+            classifierTags = borderlineTags,
+            shiftDistance = 0.04f,
+            timestampMs = 13_000L,
+            visualDescriptor = postUnmuteAngleB,
+            isTvMuted = false
+        )
+        assertEquals(0f, postDecision.cutCadencePerMin, 0.001f)
+        assertEquals(0f, postDecision.visualCutCadencePerMin, 0.001f)
+        assertTrue("Expected restored angle or prototype similarity >= 0.78, got ${postDecision.bestAngleSimilarity}", postDecision.isKnownSceneAngle)
+        assertTrue("Expected post-unmute returned show not to MUTE", postDecision.recommendedAction != TvActionDecision.MUTE)
     }
 }

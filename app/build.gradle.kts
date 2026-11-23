@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.commercialkiller"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
-        versionName = "2.4"
+        versionCode = 17
+        versionName = "2.5"
     }
 
     buildTypes {
@@ -100,4 +100,7 @@ dependencies {
 
   // MediaPipe Tasks Audio (16 KB ELF page-size aligned)
   implementation(libs.mediapipe.tasks.audio)
+
+  // LiteRT-LM on-device Stage 2 decision verifier
+  implementation(libs.litertlm.android)
 }

@@ -15,8 +15,8 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 
 ### Alternative B: Fast Local Android Decision Model (`FrameDecisionEngine`, Non-Autoregressive System 1 Evaluator)
 - **Algorithm**: Combine parallel on-device LiteRT / MediaPipe audio classification (`AudioClassifierEngine`) and synchronized `250 ms` video embeddings (`VideoFrameAnalyzer` / `VisualFrameDescriptor`) with deterministic, non-autoregressive per-frame decision queries in `FrameDecisionEngine` running on every `100 ms` frame.
-- **Characteristics**: Zero autoregressive token generation, sub-millisecond per-frame vector scoring, multi-factor fusion (classifier tags, spectral energy compression/variance, shift distance, `56`-float JEPA-like visual descriptors, and rolling shot-cut cadence), and hysteresis-gated `MUTE` / `UNMUTE` / `HOLD` outputs, with an optional `.tflite` vision embedder path using `litert-runtime` (`CompiledModel` + reusable `TensorBuffer` with GPU-to-CPU fallback).
-- **Status (`v2.4`)**: `VideoFrameAnalyzer` extracts `56`-float visual descriptors and `64×36` `RGB_565` thumbnails across CameraX `ImageAnalysis` (`MIC / CAM`) and `TextureView` + `MediaPlayer` (`FILE / VIDEO`), while `SYNTH` mode is removed. Increment 2 (`v2.5`) adds the fixed-width equal-length Session Segment Timeline; Increment 3 (`v2.6`) fuses `VisualFrameDescriptor` and `ProgramFingerprintCache` into `FrameDecisionEngine` for audio+video commercial scoring and muted-TV visual unmute.
+- **Characteristics**: Zero autoregressive token generation, sub-millisecond per-frame vector scoring, multi-factor fusion (classifier tags, spectral energy compression/variance, shift distance, `72`-float System 1 visual descriptors using spatial L1 luma similarity + RGB histogram L1 distance, and rolling audio/visual cut cadence), and hysteresis-gated `MUTE` / `UNMUTE` / `HOLD` outputs, paired with an optional Stage 2 constrained single-token `litertlm-android:0.18.0` cascade verifier (`LiteRtLmDecisionVerifier`) using `Backend.GPU()` -> `Backend.CPU()` fallback when an external `.litertlm` model is present.
+- **Status (`v2.5`)**: `VideoFrameAnalyzer` extracts `72`-float visual descriptors (`16` `lumaGrid`, `24` `8R+8G+8B` `colorHistogram`, `16` bottom-right `cornerRoiLuma`, `16` bottom-left `bottomLeftRoiLuma`, `isBlackFrame`, `visualChangeScore`) via reusable `ARGB_8888` `Bitmap` + `IntArray` buffers across CameraX `ImageAnalysis` (`MIC / CAM`) and `TextureView` + `MediaPlayer` (`FILE / VIDEO`). `ProgramFingerprintCache` maintains a `6`-angle intra-scene bank plus a `15 s` pre-break ring (`2 s` pre-mute rollback, `K = 5` diverse prototypes, dual-corner watermark stability) fused into 3-modality `FrameDecisionEngine` (`AUDIO_ONLY`, `AUDIO_VIDEO`, `VIDEO_ONLY_MUTED`), while `SessionSegmentTracker` and `SessionTimelineCard` retain fixed-height equal-width segment rows with `MiniMelStrip` + `64×36` thumbnails post-stop.
 
 ### Comparison: 1D Matrix Distance vs. On-Device Fast Decision Model
 
@@ -29,7 +29,7 @@ When comparing sequential Mel-spectrogram frames (calculated at a configurable 1
 | **Memory Allocation** | Scalar accumulator | Pre-allocated `previousFrame` `FloatArray` buffer + bounded 60,000 ms `ArrayDeque<Long>` |
 | **Action Gating** | Single threshold crossing ($\Delta > \tau$) | First-gate media check (`!isMedia` forces `HOLD`) + frame-count hysteresis (`MUTE` after scene cut or 3 commercial frames; `UNMUTE` after 5 program frames) |
 
-In `v2.4`, `AudioWorkbenchEngine` executes `100 ms` audio inspection alongside `250 ms` `VideoFrameAnalyzer` visual sampling across `MIC / CAM` (`AudioSourceMode.LIVE`) and `FILE / VIDEO` (`AudioSourceMode.FILE`), while `SpectrogramComparator` supplies the scalar shift distance $\Delta$ and `FrameDecisionEngine` evaluates `is_media`, `is_same_scene`, and `is_commercial` to drive `TvControlManager`. Increment 2 (`v2.5`) adds the fixed-width equal-length Session Segment Timeline, and Increment 3 (`v2.6`) adds cross-modal audio+video fusion and visual-only muted-TV unmute (`ProgramFingerprintCache` / `litert-runtime`).
+In `v2.5`, `AudioWorkbenchEngine` executes `100 ms` audio inspection alongside `250 ms` `VideoFrameAnalyzer` visual sampling across `MIC / CAM` (`AudioSourceMode.LIVE`) and `FILE / VIDEO` (`AudioSourceMode.FILE`), fusing `SpectrogramComparator`, `AudioClassifierEngine`, `ProgramFingerprintCache`, `FrameDecisionEngine`, and `SessionSegmentTracker` (with optional Stage 2 `LiteRtLmDecisionVerifier` cascade verification on macro transitions) to drive `TvControlManager`.
 
 ---
 
@@ -282,15 +282,14 @@ By combining the **Camera Video Stream** with **Audio Mel-Spectrogram Tracking**
 
 ---
 
-### 3. Implementation Phasing
+### 3. Implemented Phasing (`v2.5`)
 
-- **Phase 1 (Program Signature Cache Module)**:
-  - Create `ProgramFingerprintCache.kt` storing visual ROI patches, color gamut statistics, and pre-break Mel-spectrogram descriptors.
-- **Phase 2 (Video Stream Mute-Watcher Engine)**:
-  - While `isTvCurrentlyMuted == true`, switch detection driver from `AudioWorkbenchEngine` to `CameraScreen` / video frame evaluator.
-  - Calculate frame similarity against `ProgramFingerprintCache`.
-- **Phase 3 (Unified Multimodal State Machine)**:
-  - Tie transition detection to automatic `TvControlManager.sendMute()` and return detection to `TvControlManager.sendUnmute()`.
+- **Phase 1 (Program Signature Cache Module — Implemented)**:
+  - `ProgramFingerprintCache.kt` (`v2.5`): maintains a `6`-angle active scene bank (`KNOWN_ANGLE_SIMILARITY_THRESHOLD = 0.78f`), a `60`-frame (`15 s`) pre-break ring with `2 s` pre-mute rollback, `K = 5` diverse frozen prototypes, dual-corner (`cornerRoiLuma`, `bottomLeftRoiLuma`) stability templates (`variance < 0.015f`, `contrast >= 0.08f`), and pre-break prototype seeding back into `activeSceneAngles` on `unfreeze()`.
+- **Phase 2 (Video Stream Mute-Watcher Engine — Implemented)**:
+  - `FrameDecisionEngine.kt` (`v2.5`): while `isTvMuted && activeVisual != null`, switches to `DecisionModality.VIDEO_ONLY_MUTED`, suppresses room silence/ambient drift, scores return similarity (`0.45*sProto + 0.35*sBug + 0.20*gatedCadence` when bug stable, or `0.80*sProto + 0.20*gatedCadence` otherwise; `PROGRAM_RETURN_UNMUTE_THRESHOLD = 0.80f`), and clears break cadence windows/buffers via `clearBreakTrackingOnUnmute()`.
+- **Phase 3 (Unified Multimodal State Machine, Timeline & Stage 2 Hook — Implemented)**:
+  - `SessionSegmentTracker.kt`, `LiteRtLmDecisionVerifier.kt`, `AudioWorkbenchEngine.kt`, and `SessionTimelineCard` (`MainScreen.kt`) aggregate ticks into equal-width retained macro segments (`PROGRAM`, `COMMERCIAL`, `NO_MEDIA`), wire `TvControlManager.sendMute()` / `sendUnmute()` (`Simulate TV Mute` test mode included), and dispatch asynchronous constrained `COMMERCIAL`/`PROGRAM`/`UNSURE` Stage 2 verification on macro transitions when a `.litertlm` model is staged on disk.
 
 ---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*

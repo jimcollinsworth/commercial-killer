@@ -16,6 +16,10 @@ import android.os.Process
 import com.example.commercialkiller.data.action.TvControlManager
 import com.example.commercialkiller.data.decision.FrameDecision
 import com.example.commercialkiller.data.decision.FrameDecisionEngine
+import com.example.commercialkiller.data.decision.LiteRtLmDecisionVerifier
+import com.example.commercialkiller.data.decision.SessionSegment
+import com.example.commercialkiller.data.decision.SessionSegmentTracker
+import com.example.commercialkiller.data.decision.Stage2TransitionFeatures
 import com.example.commercialkiller.data.decision.TvActionDecision
 import com.example.commercialkiller.data.video.VideoFrameSnapshot
 import com.example.commercialkiller.data.video.VisualFrameDescriptor
@@ -73,22 +77,29 @@ data class WorkbenchState(
     val numMelBands: Int = 80,
     val frameDecision: FrameDecision = FrameDecision(),
     val sceneSimilarityThreshold: Float = FrameDecisionEngine.DEFAULT_SCENE_SIMILARITY_THRESHOLD,
-    val mediaThreshold: Float = FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD
+    val mediaThreshold: Float = FrameDecisionEngine.DEFAULT_MEDIA_THRESHOLD,
+    val sessionSegments: List<SessionSegment> = emptyList(),
+    val simulateMutedBreak: Boolean = false,
+    val stage2Status: String = LiteRtLmDecisionVerifier.STATUS_STAGE_1_ONLY,
+    val stage2LastVerdict: String? = null
 ) {
     val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.LIVE
 }
 
 /**
  * Core engine managing audio capture, file playback, Mel-spectrogram calculation,
- * parallel on-device audio classification, per-frame decision evaluation, and automatic TV muting/unmuting.
+ * parallel on-device audio classification, per-frame multimodal Jev decision evaluation,
+ * equal-length session timeline segmentation, and automatic TV muting/unmuting.
  */
 class AudioWorkbenchEngine(
     private val context: Context? = null
-) {
+) : AutoCloseable {
     private var calculator = MelSpectrogramCalculator(numMelBands = 80)
     private val comparator = SpectrogramComparator()
     private val classifier = AudioClassifierEngine(context)
     private val decisionEngine = FrameDecisionEngine()
+    private val segmentTracker = SessionSegmentTracker { decisionEngine.resetActiveSceneAngles() }
+    private val stage2Verifier = LiteRtLmDecisionVerifier(context)
     private val fileDecoder = AudioFileDecoder()
     val tvControlManager = TvControlManager(context)
 
@@ -99,29 +110,59 @@ class AudioWorkbenchEngine(
     private var isFileSeeking = false
     @Volatile
     private var lastVisualDescriptor: VisualFrameDescriptor? = null
+    @Volatile
+    private var latestVideoThumbForSegment: Bitmap? = null
+    @Volatile
+    private var simulateMutedBreak = false
+    @Volatile
+    private var sessionElapsedMs = 0L
+    @Volatile
+    private var lastSessionWallMs = 0L
+    private var mutedSimSilenceBuffer = FloatArray(0)
     private var isTvCurrentlyMuted = false
     private var isPaused = false
 
     private val _state = MutableStateFlow(
         WorkbenchState(
             activeClassifierModel = classifier.getActiveModelName(),
-            tvControlMethod = tvControlManager.controlMethod.name
+            tvControlMethod = tvControlManager.controlMethod.name,
+            stage2Status = stage2Verifier.getStatusText()
         )
     )
     val state: StateFlow<WorkbenchState> = _state.asStateFlow()
+
+    init {
+        if (context != null) {
+            stage2Verifier.initializeAsync { status ->
+                _state.update { it.copy(stage2Status = status) }
+            }
+        }
+    }
 
     private var engineJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default)
 
     fun start(sourceMode: AudioSourceMode = _state.value.sourceMode) {
+        startInternal(sourceMode = sourceMode, resetTimeline = true)
+    }
+
+    private fun startInternal(sourceMode: AudioSourceMode, resetTimeline: Boolean) {
         if (sourceMode == AudioSourceMode.FILE && loadedAudio == null) return
         if (_state.value.isRunning && _state.value.sourceMode == sourceMode) return
-        stop()
+        stopInternal(resetAnchorAndUnmute = resetTimeline)
 
-        comparator.reset()
-        decisionEngine.reset()
-        lastVisualDescriptor = null
-        isTvCurrentlyMuted = false
+        if (resetTimeline) {
+            comparator.reset()
+            decisionEngine.reset()
+            segmentTracker.reset()
+            sessionElapsedMs = 0L
+            lastSessionWallMs = 0L
+            lastVisualDescriptor = null
+            latestVideoThumbForSegment = null
+            isTvCurrentlyMuted = false
+        } else {
+            lastSessionWallMs = System.currentTimeMillis()
+        }
         isPaused = false
 
         _state.update { current ->
@@ -130,14 +171,16 @@ class AudioWorkbenchEngine(
                 sourceMode = sourceMode,
                 activeClassifierModel = classifier.getActiveModelName(),
                 tvControlMethod = tvControlManager.controlMethod.name,
-                isTvMuted = false,
-                frameDecision = FrameDecision(),
+                isTvMuted = if (resetTimeline) false else isTvCurrentlyMuted,
+                frameDecision = if (resetTimeline) FrameDecision() else current.frameDecision,
                 sceneSimilarityThreshold = decisionEngine.getSceneSimilarityThreshold(),
                 mediaThreshold = decisionEngine.getMediaThreshold(),
                 isVideo = if (sourceMode == AudioSourceMode.FILE) (loadedAudio?.isVideo ?: current.isVideo) else false,
-                videoFrameCount = 0L,
-                latestVisualDescriptor = null,
-                latestVideoThumbnail = null
+                videoFrameCount = if (resetTimeline) 0L else current.videoFrameCount,
+                latestVisualDescriptor = if (resetTimeline) null else current.latestVisualDescriptor,
+                latestVideoThumbnail = if (resetTimeline) null else current.latestVideoThumbnail,
+                sessionSegments = if (resetTimeline) emptyList() else current.sessionSegments,
+                stage2LastVerdict = if (resetTimeline) null else current.stage2LastVerdict
             )
         }
 
@@ -151,7 +194,7 @@ class AudioWorkbenchEngine(
 
     /**
      * Pauses active audio capture or file playback when the host Activity is STOPPED.
-     * Preserves state and playback position so it can resume.
+     * Preserves state, playback position, and session timeline so it can resume.
      */
     fun pause() {
         if (!_state.value.isRunning || isPaused) return
@@ -167,20 +210,43 @@ class AudioWorkbenchEngine(
     fun resume() {
         if (!isPaused) return
         isPaused = false
-        start(_state.value.sourceMode)
+        startInternal(_state.value.sourceMode, resetTimeline = false)
     }
 
     fun stop() {
         isPaused = false
+        stopInternal(resetAnchorAndUnmute = true)
+    }
+
+    private fun stopInternal(resetAnchorAndUnmute: Boolean) {
         engineJob?.cancel()
         engineJob = null
-        if (isTvCurrentlyMuted && tvControlManager.isAutoMuteEnabled) {
-            scope.launch {
-                tvControlManager.sendUnmute()
+        if (resetAnchorAndUnmute) {
+            if (isTvCurrentlyMuted && tvControlManager.isAutoMuteEnabled) {
+                scope.launch {
+                    tvControlManager.sendUnmute()
+                }
             }
+            isTvCurrentlyMuted = false
+            decisionEngine.onManualUnmute()
+            val retainedSegments = segmentTracker.finalizeActiveSegment(sessionElapsedMs)
+            _state.update {
+                it.copy(
+                    isRunning = false,
+                    isEventTriggered = false,
+                    isTvMuted = false,
+                    sessionSegments = retainedSegments
+                )
+            }
+        } else {
+            _state.update { it.copy(isRunning = false, isEventTriggered = false) }
         }
-        isTvCurrentlyMuted = false
-        _state.update { it.copy(isRunning = false, isEventTriggered = false, isTvMuted = false) }
+    }
+
+    override fun close() {
+        stop()
+        stage2Verifier.close()
+        classifier.close()
     }
 
     fun setThreshold(newThreshold: Float) {
@@ -213,6 +279,7 @@ class AudioWorkbenchEngine(
     fun setCameraEnabled(enabled: Boolean) {
         if (!enabled) {
             lastVisualDescriptor = null
+            latestVideoThumbForSegment = null
         }
         _state.update { current ->
             current.copy(
@@ -223,17 +290,45 @@ class AudioWorkbenchEngine(
         }
     }
 
+    fun setSimulateMutedBreak(enabled: Boolean) {
+        simulateMutedBreak = enabled
+        _state.update { it.copy(simulateMutedBreak = enabled) }
+    }
+
+    fun setAutoMuteEnabled(enabled: Boolean) {
+        tvControlManager.isAutoMuteEnabled = enabled
+    }
+
+    fun manualUnmute() {
+        decisionEngine.onManualUnmute()
+        isTvCurrentlyMuted = false
+        _state.update { it.copy(isTvMuted = false) }
+        if (tvControlManager.isAutoMuteEnabled) {
+            scope.launch {
+                tvControlManager.sendUnmute()
+            }
+        }
+    }
+
     fun getLastVisualDescriptor(): VisualFrameDescriptor? = lastVisualDescriptor
 
     fun onVideoFrameSampled(snapshot: VideoFrameSnapshot) {
         lastVisualDescriptor = snapshot.descriptor
+        if (snapshot.thumbnail != null) {
+            latestVideoThumbForSegment = snapshot.thumbnail
+        }
         _state.update { current ->
             current.copy(
                 latestVisualDescriptor = snapshot.descriptor,
-                latestVideoThumbnail = snapshot.thumbnail,
+                latestVideoThumbnail = snapshot.thumbnail ?: current.latestVideoThumbnail,
                 videoFrameCount = current.videoFrameCount + 1L
             )
         }
+    }
+
+    fun prepareForExternalFileIntent() {
+        stop()
+        _state.update { current -> current.copy(sourceMode = AudioSourceMode.FILE) }
     }
 
     suspend fun loadAudioFile(appContext: Context, uri: Uri): Result<DecodedAudio> {
@@ -261,6 +356,9 @@ class AudioWorkbenchEngine(
             Result.success(decoded)
         } catch (e: Exception) {
             e.printStackTrace()
+            if (loadedAudio == null) {
+                _state.update { current -> current.copy(sourceMode = AudioSourceMode.LIVE) }
+            }
             Result.failure(e)
         }
     }
@@ -364,8 +462,25 @@ class AudioWorkbenchEngine(
         filePositionMs: Long? = null,
         fileProgress: Float? = null
     ) {
-        val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(samples) }
-        val classificationDeferred = scope.async { classifier.classify(samples) }
+        val nowMs = System.currentTimeMillis()
+        val prevWall = lastSessionWallMs
+        if (prevWall > 0L) {
+            sessionElapsedMs += (nowMs - prevWall).coerceIn(0L, 1_000L)
+        }
+        lastSessionWallMs = nowMs
+        val elapsedMs = sessionElapsedMs
+
+        val analysisInput = if (simulateMutedBreak && isTvCurrentlyMuted) {
+            if (mutedSimSilenceBuffer.size != samples.size) {
+                mutedSimSilenceBuffer = FloatArray(samples.size)
+            }
+            mutedSimSilenceBuffer
+        } else {
+            samples
+        }
+
+        val melEnergiesDeferred = scope.async { calculator.computeMelEnergies(analysisInput) }
+        val classificationDeferred = scope.async { classifier.classify(analysisInput) }
 
         val melEnergies = melEnergiesDeferred.await()
         val classificationScores = classificationDeferred.await()
@@ -392,11 +507,15 @@ class AudioWorkbenchEngine(
             )
         }
 
+        val visualSnapshot = lastVisualDescriptor
+        val mutedBeforeEval = isTvCurrentlyMuted
         val decision = decisionEngine.evaluateFrame(
             melEnergies = melEnergies,
             classifierTags = classificationScores,
             shiftDistance = compResult.distance,
-            timestampMs = System.currentTimeMillis()
+            timestampMs = nowMs,
+            visualDescriptor = visualSnapshot,
+            isTvMuted = mutedBeforeEval
         )
 
         evaluateAutoMute(
@@ -407,7 +526,40 @@ class AudioWorkbenchEngine(
             threshold = compResult.threshold
         )
 
-        downsampleWaveform(samples, waveformView)
+        val (updatedSegments, openedSegment) = segmentTracker.onFrame(
+            timestampMs = elapsedMs,
+            decision = decision,
+            melEnergies = melEnergies,
+            thumbnail = latestVideoThumbForSegment
+        )
+
+        if (openedSegment != null && stage2Verifier.isModelReady()) {
+            val tags = classificationScores.filter { it.score >= 0.10f }.map { it.label }
+            val match = visualSnapshot?.let { decisionEngine.programCache.scoreAgainstProgram(it) }
+            stage2Verifier.verifyTransitionAsync(
+                Stage2TransitionFeatures(
+                    mediaScore = decision.mediaScore,
+                    commercialScore = decision.commercialScore,
+                    visualChangeScore = decision.visualChangeScore,
+                    prototypeSimilarity = match?.prototypeSimilarity ?: decision.bestAngleSimilarity,
+                    hasStableBug = match?.hasStableBug ?: false,
+                    bugSimilarity = match?.bugSimilarity ?: 0f,
+                    cutsPerMin = maxOf(decision.cutCadencePerMin, decision.visualCutCadencePerMin),
+                    topTags = tags,
+                    isTvMuted = isTvCurrentlyMuted
+                )
+            ) { verdict ->
+                val withVerdict = segmentTracker.attachStage2Verdict(openedSegment.id, verdict.name)
+                _state.update {
+                    it.copy(
+                        sessionSegments = withVerdict,
+                        stage2LastVerdict = verdict.name
+                    )
+                }
+            }
+        }
+
+        downsampleWaveform(analysisInput, waveformView)
 
         _state.update { current ->
             current.copy(
@@ -420,6 +572,7 @@ class AudioWorkbenchEngine(
                 eventLogs = snapshotLogs(logs),
                 classifierScores = classificationScores,
                 frameDecision = decision,
+                sessionSegments = updatedSegments,
                 filePositionMs = filePositionMs ?: current.filePositionMs,
                 fileProgress = fileProgress ?: current.fileProgress
             )

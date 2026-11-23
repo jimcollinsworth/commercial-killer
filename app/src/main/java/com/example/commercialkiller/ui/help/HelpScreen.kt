@@ -189,8 +189,8 @@ fun HelpScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         HelpSubItem(
-                            title = "5. MUTE / UNMUTE / HOLD Action Gating",
-                            description = "Applies first-gate media filtering and consecutive-frame hysteresis before dispatching TV control signals: holds non-media frames (HOLD, resetting break streaks after > 3 non-media frames), emits MUTE on media commercial frames with a scene cut or 3 consecutive frames, and emits UNMUTE after 5 consecutive program frames."
+                            title = "5. Audio+Video Fusion, Angle Immunity & Video-Only Unmute",
+                            description = "Fuses 250 ms dual-corner visual descriptors with audio scores (`AUDIO_VIDEO`), maintains a 6-shot active angle bank (`ProgramFingerprintCache`) so camera edits within a scene do not reset or split timeline segments, freezes up to 5 pre-break prototypes on MUTE, switches to `VIDEO_ONLY_MUTED` while muted to detect program return, and aggregates transitions into a retained equal-length Session Timeline optionally verified by Stage 2 LiteRT-LM."
                         )
                     }
                 }

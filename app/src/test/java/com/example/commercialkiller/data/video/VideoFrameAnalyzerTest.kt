@@ -74,4 +74,40 @@ class VideoFrameAnalyzerTest {
             bugDesc.lumaGrid[15] >= 0.99f
         )
     }
+
+    @Test
+    fun `bottomLeftRoiLuma isBlackFrame and similarity helpers behave deterministically`() {
+        val width = 64
+        val height = 36
+        val black = filledFrame(0xFF000000.toInt(), width, height)
+        val blackDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(black, width, height, 100L, null)
+        assertTrue(blackDesc.isBlackFrame)
+
+        val leftCornerBright = black.copyOf()
+        for (y in (height * 3) / 4 until height) {
+            for (x in 0 until width / 4) {
+                leftCornerBright[y * width + x] = 0xFFFFFFFF.toInt()
+            }
+        }
+        val leftDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(leftCornerBright, width, height, 350L, blackDesc)
+        assertTrue(leftDesc.bottomLeftRoiLuma[0] >= 0.99f)
+        assertEquals(0f, leftDesc.cornerRoiLuma[0], 0.001f)
+        assertEquals(1.0f, VideoFrameAnalyzer.descriptorSimilarity(leftDesc, leftDesc), 0.001f)
+        assertEquals(1.0f, VideoFrameAnalyzer.cornerSimilarity(leftDesc.bottomLeftRoiLuma, leftDesc.bottomLeftRoiLuma), 0.001f)
+    }
+
+    @Test
+    fun `dark studio frame and bright beige commercial frame yield low similarity`() {
+        val studioPixels = filledFrame(0xFF1A2233.toInt())
+        val commercialPixels = filledFrame(0xFFD6C2A3.toInt())
+
+        val studioDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(studioPixels, 64, 36, 100L, null)
+        val commercialDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(commercialPixels, 64, 36, 350L, studioDesc)
+
+        val sim = VideoFrameAnalyzer.descriptorSimilarity(studioDesc, commercialDesc)
+        assertTrue(
+            "Expected dark studio vs bright beige commercial similarity < 0.55f, got $sim",
+            sim < 0.55f
+        )
+    }
 }

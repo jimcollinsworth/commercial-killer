@@ -5,6 +5,7 @@ package com.example.commercialkiller.ui.main
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
@@ -12,6 +13,7 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +50,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
@@ -64,6 +69,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -82,8 +89,12 @@ import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
 import com.example.commercialkiller.data.audio.ClassifierScore
 import com.example.commercialkiller.data.audio.WorkbenchEvent
 import com.example.commercialkiller.data.audio.WorkbenchState
+import com.example.commercialkiller.data.decision.DecisionModality
 import com.example.commercialkiller.data.decision.FrameDecision
+import com.example.commercialkiller.data.decision.FrameDecisionEngine
 import com.example.commercialkiller.data.decision.MediaEnvironment
+import com.example.commercialkiller.data.decision.SegmentLabel
+import com.example.commercialkiller.data.decision.SessionSegment
 import com.example.commercialkiller.data.video.VideoFrameAnalyzer
 import com.example.commercialkiller.data.video.VideoFrameSnapshot
 import com.example.commercialkiller.data.video.VisualFrameDescriptor
@@ -93,6 +104,7 @@ import com.example.commercialkiller.ui.components.CameraIcon
 import com.example.commercialkiller.ui.components.DistanceMeter
 import com.example.commercialkiller.ui.components.HelpIcon
 import com.example.commercialkiller.ui.components.MicIcon
+import com.example.commercialkiller.ui.components.MiniMelStrip
 import com.example.commercialkiller.ui.components.PlayIcon
 import com.example.commercialkiller.ui.components.SettingsIcon
 import com.example.commercialkiller.ui.components.SlidersIcon
@@ -187,11 +199,15 @@ fun MainScreen(
             numMelBands = state.numMelBands,
             mediaThreshold = state.mediaThreshold,
             sceneSimilarityThreshold = state.sceneSimilarityThreshold,
+            simulateMutedBreak = state.simulateMutedBreak,
+            stage2Status = state.stage2Status,
+            stage2LastVerdict = state.stage2LastVerdict,
             onIntervalChanged = { engine.setInterval(it) },
             onThresholdChanged = { engine.setThreshold(it) },
             onMelBandsChanged = { engine.setMelBands(it) },
             onMediaThresholdChanged = { engine.setMediaThreshold(it) },
             onSceneSimilarityThresholdChanged = { engine.setSceneSimilarityThreshold(it) },
+            onSimulateMutedBreakChanged = { engine.setSimulateMutedBreak(it) },
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -251,7 +267,8 @@ fun MainScreen(
                                     livePermissionsLauncher = livePermissionsLauncher,
                                     filePickerLauncher = filePickerLauncher
                                 )
-                            }
+                            },
+                            onManualUnmute = { engine.manualUnmute() }
                         )
 
                         ActiveMediaInputSlot(
@@ -292,7 +309,7 @@ fun MainScreen(
                         )
                     }
 
-                    // Right Pane: Features and Labeling Underneath
+                    // Right Pane: Features and Session Timeline Underneath
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -308,7 +325,8 @@ fun MainScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        EventConsoleCard(
+                        SessionTimelineCard(
+                            segments = state.sessionSegments,
                             events = state.eventLogs,
                             modifier = Modifier.weight(1f)
                         )
@@ -353,7 +371,8 @@ fun MainScreen(
                                 livePermissionsLauncher = livePermissionsLauncher,
                                 filePickerLauncher = filePickerLauncher
                             )
-                        }
+                        },
+                        onManualUnmute = { engine.manualUnmute() }
                     )
 
                     ActiveMediaInputSlot(
@@ -381,11 +400,11 @@ fun MainScreen(
 
                     // 2. Audio Mel Spectrogram underneath
                     val spectrogramHeight = if ((state.sourceMode == AudioSourceMode.FILE && state.isVideo) || isLiveCameraPreviewVisible) {
-                        215.dp
+                        175.dp
                     } else if (isShortWindow) {
-                        190.dp
+                        170.dp
                     } else {
-                        310.dp
+                        270.dp
                     }
 
                     SpectrogramWaterfallCard(
@@ -401,7 +420,7 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // 3. Features and labeling underneath that
+                    // 3. Features and Equal-Length Session Timeline Underneath
                     ClassifierLabelsContent(scores = state.classifierScores)
 
                     DistanceMeterCard(
@@ -411,11 +430,12 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    EventConsoleCard(
+                    SessionTimelineCard(
+                        segments = state.sessionSegments,
                         events = state.eventLogs,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(110.dp)
+                            .height(150.dp)
                     )
                 }
             }
@@ -632,40 +652,67 @@ private fun FrameDecisionBar(
     decision: FrameDecision,
     modifier: Modifier = Modifier
 ) {
+    val isVideoMuted = decision.decisionModality == DecisionModality.VIDEO_ONLY_MUTED
     val mediaBg = when {
+        isVideoMuted -> Color(0xFF0284C7)
         decision.isMedia -> Color(0xFF0D9488)
         decision.mediaEnvironment == MediaEnvironment.SILENCE -> Color(0xFF475569)
         else -> Color(0xFF64748B)
     }
     val mediaText = when {
+        isVideoMuted -> "VID-ONLY (MUTED)"
         decision.isMedia -> "MEDIA %.0f%%".format(decision.mediaScore * 100f)
         decision.mediaEnvironment == MediaEnvironment.SILENCE -> "NO MEDIA: SILENCE"
         else -> "NO MEDIA: AMBIENT"
     }
 
     val commercialBg = when {
+        isVideoMuted && decision.programReturnScore >= FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD -> Color(0xFF16A34A)
+        isVideoMuted -> Color(0xFFD97706)
         !decision.isMedia -> Color(0xFF334155)
         decision.isCommercial -> Color(0xFFDC2626)
         else -> Color(0xFF16A34A)
     }
     val commercialText = when {
+        isVideoMuted -> "RET %.0f%%".format(decision.programReturnScore * 100f)
         !decision.isMedia -> "HOLD (NO MEDIA)"
         decision.isCommercial -> "COMMERCIAL %.0f%%".format(decision.commercialScore * 100f)
         else -> "PROGRAM %.0f%%".format((1f - decision.commercialScore) * 100f)
     }
 
-    val sceneBg = if (decision.isSameScene) Color(0xFF0284C7) else Color(0xFFD97706)
+    val sceneBg = when {
+        decision.isKnownSceneAngle && decision.isSameScene -> Color(0xFF0284C7)
+        decision.isSameScene -> Color(0xFF0284C7)
+        else -> Color(0xFFD97706)
+    }
     val sceneText = if (decision.isSameScene) {
         "SAME %.2f".format(decision.sceneSimilarity)
     } else {
         "CUT %.2f".format(decision.sceneSimilarity)
     }
 
-    val leftTelemetry = "Media: %.0f%% | Shot: %.1fs".format(
-        decision.mediaScore * 100f,
-        decision.shotDurationMs / 1000f
-    )
-    val rightTelemetry = "%.0f cuts/min".format(decision.cutCadencePerMin)
+    val modalityTag = when (decision.decisionModality) {
+        DecisionModality.AUDIO_VIDEO -> "A+V"
+        DecisionModality.VIDEO_ONLY_MUTED -> "VID-ONLY"
+        DecisionModality.AUDIO_ONLY -> "AUD-ONLY"
+    }
+    val leftTelemetry = if (isVideoMuted) {
+        "$modalityTag | Ret: %.0f%% | Mute: %.1fs".format(
+            decision.programReturnScore * 100f,
+            decision.shotDurationMs / 1000f
+        )
+    } else {
+        "$modalityTag | Media: %.0f%% | %.1fs".format(
+            decision.mediaScore * 100f,
+            decision.shotDurationMs / 1000f
+        )
+    }
+    val effectiveCuts = if (decision.decisionModality != DecisionModality.AUDIO_ONLY) {
+        maxOf(decision.cutCadencePerMin, decision.visualCutCadencePerMin)
+    } else {
+        decision.cutCadencePerMin
+    }
+    val rightTelemetry = "%.0f cuts/min".format(effectiveCuts)
 
     Surface(
         modifier = modifier.height(48.dp),
@@ -871,74 +918,302 @@ private fun ClassifierLabelsContent(scores: List<ClassifierScore>) {
 }
 
 @Composable
-private fun EventConsoleCard(
+private fun SessionTimelineCard(
+    segments: List<SessionSegment>,
     events: List<WorkbenchEvent>,
     modifier: Modifier = Modifier
 ) {
+    var showRawLog by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val newestSegmentId = segments.firstOrNull()?.id
+
+    LaunchedEffect(newestSegmentId, showRawLog) {
+        if (!showRawLog && newestSegmentId != null && listState.firstVisibleItemIndex <= 1) {
+            listState.scrollToItem(0)
+        }
+    }
+
     Column(modifier = modifier) {
-        Text(
-            text = "REAL-TIME EVENT CONSOLE",
-            fontSize = 9.5.sp,
-            lineHeight = 11.sp,
-            color = Color(0xFF94A3B8),
-            fontWeight = FontWeight.Bold,
-            maxLines = 1
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        LazyColumn(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f, fill = true)
-                .background(Color(0xFF0A0F1D), RoundedCornerShape(8.dp))
-                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp))
-                .padding(6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+                .height(18.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            if (events.isEmpty()) {
-                item {
-                    Text(
-                        text = "Awaiting acoustic shift events...",
-                        color = Color.Gray,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1
-                    )
-                }
-            } else {
-                items(events) { event ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            Text(
+                text = if (showRawLog) "EVENT LOG (${events.size})" else "SESSION TIMELINE (${segments.size})",
+                fontSize = 9.5.sp,
+                lineHeight = 11.sp,
+                color = Color(0xFF94A3B8),
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+
+            Row(
+                modifier = Modifier
+                    .background(Color(0xFF1E293B), RoundedCornerShape(4.dp))
+                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp))
+                    .padding(1.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                listOf(false to "TIMELINE", true to "LOG").forEach { (isLogTab, label) ->
+                    val selected = showRawLog == isLogTab
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(if (selected) Color(0xFF0284C7) else Color.Transparent)
+                            .clickable { showRawLog = isLogTab }
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                        contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "[${event.timestamp}] ${event.description}",
-                            color = Color(0xFF34D399),
-                            fontSize = 9.5.sp,
-                            lineHeight = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 6.dp)
-                        )
-                        Text(
-                            text = "Δ=%.3f".format(event.distance),
-                            color = Color(0xFFFBBF24),
-                            fontSize = 9.5.sp,
-                            lineHeight = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            softWrap = false
+                            text = label,
+                            color = if (selected) Color.White else Color(0xFF94A3B8),
+                            fontSize = 8.sp,
+                            lineHeight = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
                         )
                     }
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = true)
+                .background(Color(0xFF0A0F1D), RoundedCornerShape(8.dp))
+                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(8.dp))
+                .padding(5.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (!showRawLog) {
+                if (segments.isEmpty()) {
+                    item {
+                        Text(
+                            text = "Start MIC / CAM or FILE / VIDEO to record segments...",
+                            color = Color.Gray,
+                            fontSize = 9.5.sp,
+                            lineHeight = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
+                        )
+                    }
+                } else {
+                    items(segments, key = { it.id }) { segment ->
+                        SessionTimelineRow(segment = segment)
+                    }
+                }
+            } else {
+                if (events.isEmpty()) {
+                    item {
+                        Text(
+                            text = "Awaiting acoustic shift events...",
+                            color = Color.Gray,
+                            fontSize = 9.5.sp,
+                            lineHeight = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
+                        )
+                    }
+                } else {
+                    items(events) { event ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "[${event.timestamp}] ${event.description}",
+                                color = Color(0xFF34D399),
+                                fontSize = 9.5.sp,
+                                lineHeight = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 6.dp)
+                            )
+                            Text(
+                                text = "Δ=%.3f".format(event.distance),
+                                color = Color(0xFFFBBF24),
+                                fontSize = 9.5.sp,
+                                lineHeight = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+@Composable
+private fun SessionTimelineRow(segment: SessionSegment) {
+    val labelBg = when (segment.label) {
+        SegmentLabel.PROGRAM -> Color(0xFF16A34A)
+        SegmentLabel.COMMERCIAL -> Color(0xFFDC2626)
+        SegmentLabel.NO_MEDIA -> Color(0xFF475569)
+    }
+    val labelText = when (segment.label) {
+        SegmentLabel.PROGRAM -> "PROGRAM"
+        SegmentLabel.COMMERCIAL -> "COMMERCIAL"
+        SegmentLabel.NO_MEDIA -> "NO MEDIA"
+    }
+    val borderColor = if (segment.isActive) Color(0xFF38BDF8) else Color(0xFF1E293B)
+    val durationSec = ((segment.endMs - segment.startMs).coerceAtLeast(0L) / 1000L)
+    val timeRangeText = "%s-%s (%ds)".format(
+        formatMmSs(segment.startMs),
+        formatMmSs(segment.endMs),
+        durationSec
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF111827))
+            .border(1.dp, borderColor, RoundedCornerShape(6.dp))
+            .padding(horizontal = 4.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 1. Compact Video Thumbnail (equal width across every segment)
+        Box(
+            modifier = Modifier
+                .width(56.dp)
+                .height(34.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF020617))
+                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            val bmp = segment.thumbnail
+            if (bmp != null && !bmp.isRecycled) {
+                Image(
+                    bitmap = remember(bmp) { bmp.asImageBitmap() },
+                    contentDescription = "Segment thumbnail",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    text = "AUD",
+                    color = Color(0xFF64748B),
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // 2. Concise Equal-Width Audio Mel Strip
+        MiniMelStrip(
+            melStrip = segment.melStrip,
+            modifier = Modifier
+                .width(50.dp)
+                .height(34.dp)
+        )
+
+        // 3. Segment Label, Duration Range, and Transition Reason
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(labelBg, RoundedCornerShape(3.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = if (segment.isActive) "$labelText ●" else labelText,
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            lineHeight = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                    segment.stage2Verdict?.let { verdict ->
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF0284C7), RoundedCornerShape(3.dp))
+                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = "S2:$verdict",
+                                color = Color.White,
+                                fontSize = 7.5.sp,
+                                lineHeight = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = timeRangeText,
+                    color = Color(0xFF94A3B8),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 8.5.sp,
+                    lineHeight = 10.sp,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "#${segment.id} ${segment.transitionReason}",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(end = 4.dp)
+                )
+                Text(
+                    text = "%.0f%%".format(segment.confidence * 100f),
+                    color = Color(0xFF38BDF8),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 8.5.sp,
+                    lineHeight = 10.sp,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+private fun formatMmSs(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    return "%02d:%02d".format(totalSec / 60L, totalSec % 60L)
 }
 
 @Composable
@@ -950,7 +1225,8 @@ private fun WorkbenchHeader(
     onItemClick: (NavKey) -> Unit = {},
     onOpenSpectrogramSettings: () -> Unit,
     onToggleRunning: () -> Unit,
-    onSelectSource: (AudioSourceMode) -> Unit
+    onSelectSource: (AudioSourceMode) -> Unit,
+    onManualUnmute: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -969,10 +1245,11 @@ private fun WorkbenchHeader(
                 )
                 Box(
                     modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
                         .background(
-                            if (isTvMuted) Color(0xFFDC2626) else Color(0xFF1E293B),
-                            RoundedCornerShape(4.dp)
+                            if (isTvMuted) Color(0xFFDC2626) else Color(0xFF1E293B)
                         )
+                        .then(if (isTvMuted) Modifier.clickable(onClick = onManualUnmute) else Modifier)
                         .padding(horizontal = 4.dp, vertical = 1.dp)
                 ) {
                     Text(
@@ -1279,29 +1556,36 @@ private fun VideoPlayerCard(
 
                 LaunchedEffect(uri, isPlaying, isPrepared) {
                     if (!isPlaying || !isPrepared) return@LaunchedEffect
-                    while (true) {
-                        val tv = textureViewRef
-                        if (tv != null && tv.isAvailable) {
-                            val bmp = tv.getBitmap(
-                                VideoFrameAnalyzer.THUMB_WIDTH,
-                                VideoFrameAnalyzer.THUMB_HEIGHT
-                            )
-                            if (bmp != null) {
-                                try {
-                                    val snapshot = withContext(Dispatchers.Default) {
-                                        VideoFrameAnalyzer.sampleBitmap(
-                                            source = bmp,
-                                            timestampMs = System.currentTimeMillis(),
-                                            previous = currentPrevProvider()
-                                        )
-                                    }
-                                    currentOnFrameSampled(snapshot)
-                                } finally {
-                                    if (!bmp.isRecycled) bmp.recycle()
+                    val reusedBitmap = Bitmap.createBitmap(
+                        VideoFrameAnalyzer.THUMB_WIDTH,
+                        VideoFrameAnalyzer.THUMB_HEIGHT,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    val pixelScratch = IntArray(
+                        VideoFrameAnalyzer.THUMB_WIDTH * VideoFrameAnalyzer.THUMB_HEIGHT
+                    )
+                    try {
+                        while (true) {
+                            val tv = textureViewRef
+                            if (tv != null && tv.isAvailable) {
+                                val bmp = tv.getBitmap(reusedBitmap)
+                                val snapshot = withContext(Dispatchers.Default) {
+                                    VideoFrameAnalyzer.sampleIntoReusableBuffer(
+                                        source = bmp,
+                                        pixelScratch = pixelScratch,
+                                        timestampMs = System.currentTimeMillis(),
+                                        previous = currentPrevProvider(),
+                                        captureThumbnail = true
+                                    )
                                 }
+                                currentOnFrameSampled(snapshot)
                             }
+                            delay(250L)
                         }
-                        delay(250L)
+                    } finally {
+                        if (!reusedBitmap.isRecycled) {
+                            reusedBitmap.recycle()
+                        }
                     }
                 }
 
@@ -1545,11 +1829,15 @@ private fun SpectrogramSettingsSheet(
     numMelBands: Int,
     mediaThreshold: Float,
     sceneSimilarityThreshold: Float,
+    simulateMutedBreak: Boolean,
+    stage2Status: String,
+    stage2LastVerdict: String?,
     onIntervalChanged: (Long) -> Unit,
     onThresholdChanged: (Float) -> Unit,
     onMelBandsChanged: (Int) -> Unit,
     onMediaThresholdChanged: (Float) -> Unit,
     onSceneSimilarityThresholdChanged: (Float) -> Unit,
+    onSimulateMutedBreakChanged: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -1768,6 +2056,69 @@ private fun SpectrogramSettingsSheet(
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
                         }
+                    }
+                }
+            }
+
+            // Simulated TV Mute Toggle (FILE / VIDEO visual-only unmute testing)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        text = "Simulate TV Mute (Video-Only Unmute)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.LightGray
+                    )
+                    Text(
+                        text = "Zeroes audio while TV MUTED in FILE / VIDEO mode to verify video-only program return detection",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF94A3B8),
+                        fontSize = 11.sp
+                    )
+                }
+                Switch(
+                    checked = simulateMutedBreak,
+                    onCheckedChange = onSimulateMutedBreakChanged,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = Color(0xFF0284C7),
+                        uncheckedThumbColor = Color(0xFF94A3B8),
+                        uncheckedTrackColor = Color(0xFF0F172A)
+                    )
+                )
+            }
+
+            // Stage 2 LiteRT-LM Cascade Status Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "STAGE 2 LITERT-LM CASCADE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF14B8A6),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = stage2Status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White,
+                        fontSize = 11.sp
+                    )
+                    if (stage2LastVerdict != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Last Transition Verdict: $stage2LastVerdict",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF38BDF8),
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }

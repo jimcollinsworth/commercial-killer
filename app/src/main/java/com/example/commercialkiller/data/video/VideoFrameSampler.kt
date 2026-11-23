@@ -4,13 +4,13 @@ package com.example.commercialkiller.data.video
 import android.graphics.Bitmap
 import androidx.camera.core.ImageProxy
 import kotlin.math.abs
-import kotlin.math.sqrt
 
 /**
- * Compact 56-float visual embedding computed on a 64x36 frame:
+ * Compact 72-float visual embedding computed on a 64x36 frame:
  * - 16 floats: 4x4 spatial luminance grid
  * - 24 floats: 8R + 8G + 8B normalized color histograms
  * - 16 floats: 4x4 bottom-right corner ROI luminance grid (station watermark region)
+ * - 16 floats: 4x4 bottom-left corner ROI luminance grid (alternate watermark / ticker region)
  */
 data class VisualFrameDescriptor(
     val timestampMs: Long = 0L,
@@ -18,6 +18,8 @@ data class VisualFrameDescriptor(
     val lumaGrid: FloatArray = FloatArray(16),
     val colorHistogram: FloatArray = FloatArray(24),
     val cornerRoiLuma: FloatArray = FloatArray(16),
+    val bottomLeftRoiLuma: FloatArray = FloatArray(16),
+    val isBlackFrame: Boolean = false,
     val visualChangeScore: Float = 0f
 ) {
     override fun equals(other: Any?): Boolean {
@@ -28,6 +30,8 @@ data class VisualFrameDescriptor(
             lumaGrid.contentEquals(other.lumaGrid) &&
             colorHistogram.contentEquals(other.colorHistogram) &&
             cornerRoiLuma.contentEquals(other.cornerRoiLuma) &&
+            bottomLeftRoiLuma.contentEquals(other.bottomLeftRoiLuma) &&
+            isBlackFrame == other.isBlackFrame &&
             visualChangeScore == other.visualChangeScore
     }
 
@@ -37,6 +41,8 @@ data class VisualFrameDescriptor(
         result = 31 * result + lumaGrid.contentHashCode()
         result = 31 * result + colorHistogram.contentHashCode()
         result = 31 * result + cornerRoiLuma.contentHashCode()
+        result = 31 * result + bottomLeftRoiLuma.contentHashCode()
+        result = 31 * result + isBlackFrame.hashCode()
         result = 31 * result + visualChangeScore.hashCode()
         return result
     }
@@ -74,11 +80,14 @@ object VideoFrameAnalyzer {
         val colorHistogram = FloatArray(24)
         val cornerRoiLuma = FloatArray(16)
         val roiCounts = IntArray(16)
+        val bottomLeftRoiLuma = FloatArray(16)
+        val leftRoiCounts = IntArray(16)
 
         val roiStartX = (width * 3) / 4
         val roiStartY = (height * 3) / 4
         val roiWidth = (width - roiStartX).coerceAtLeast(1)
         val roiHeight = (height - roiStartY).coerceAtLeast(1)
+        val leftEndX = (width / 4).coerceAtLeast(1)
 
         var totalLuma = 0.0
 
@@ -112,6 +121,12 @@ object VideoFrameAnalyzer {
                     cornerRoiLuma[roiIdx] += luma
                     roiCounts[roiIdx]++
                 }
+                if (inRoiY && x < leftEndX) {
+                    val leftX = ((x * 4) / leftEndX).coerceIn(0, 3)
+                    val leftIdx = roiY * 4 + leftX
+                    bottomLeftRoiLuma[leftIdx] += luma
+                    leftRoiCounts[leftIdx]++
+                }
             }
         }
 
@@ -121,13 +136,14 @@ object VideoFrameAnalyzer {
         for (i in 0 until 16) {
             if (lumaCounts[i] > 0) lumaGrid[i] /= lumaCounts[i].toFloat()
             if (roiCounts[i] > 0) cornerRoiLuma[i] /= roiCounts[i].toFloat()
+            if (leftRoiCounts[i] > 0) bottomLeftRoiLuma[i] /= leftRoiCounts[i].toFloat()
         }
         for (i in 0 until 24) {
             colorHistogram[i] /= totalPixels
         }
 
         val changeScore = if (previous != null) {
-            val lumaDist = cosineDistance(lumaGrid, previous.lumaGrid)
+            val lumaDist = lumaL1Distance(lumaGrid, previous.lumaGrid)
             val histDist = histogramL1Distance(colorHistogram, previous.colorHistogram)
             val blended = 0.5f * lumaDist + 0.5f * histDist
             maxOf(blended, histDist * 0.75f).coerceIn(0f, 1f)
@@ -141,6 +157,8 @@ object VideoFrameAnalyzer {
             lumaGrid = lumaGrid,
             colorHistogram = colorHistogram,
             cornerRoiLuma = cornerRoiLuma,
+            bottomLeftRoiLuma = bottomLeftRoiLuma,
+            isBlackFrame = meanLuma < 0.08f,
             visualChangeScore = changeScore
         )
     }
@@ -261,22 +279,57 @@ object VideoFrameAnalyzer {
         }
     }
 
-    private fun cosineDistance(a: FloatArray, b: FloatArray): Float {
-        if (a.size != b.size || a.isEmpty()) return 0f
-        var dot = 0.0
-        var normA = 0.0
-        var normB = 0.0
-        for (i in a.indices) {
-            val va = a[i].toDouble()
-            val vb = b[i].toDouble()
-            dot += va * vb
-            normA += va * va
-            normB += vb * vb
+    /**
+     * Samples a 64x36 [source] Bitmap into a caller-owned [pixelScratch] array without allocating
+     * a temporary IntArray per frame. Falls back to [sampleBitmap] if dimensions differ.
+     */
+    fun sampleIntoReusableBuffer(
+        source: Bitmap,
+        pixelScratch: IntArray,
+        timestampMs: Long,
+        previous: VisualFrameDescriptor? = null,
+        captureThumbnail: Boolean = true
+    ): VideoFrameSnapshot {
+        if (source.width != THUMB_WIDTH || source.height != THUMB_HEIGHT ||
+            pixelScratch.size < THUMB_WIDTH * THUMB_HEIGHT
+        ) {
+            return sampleBitmap(source, timestampMs, previous)
         }
-        if (normA <= 1e-10 && normB <= 1e-10) return 0f
-        if (normA <= 1e-10 || normB <= 1e-10) return 1f
-        val sim = (dot / (sqrt(normA) * sqrt(normB))).toFloat().coerceIn(0f, 1f)
-        return (1f - sim).coerceIn(0f, 1f)
+        source.getPixels(pixelScratch, 0, THUMB_WIDTH, 0, 0, THUMB_WIDTH, THUMB_HEIGHT)
+        val descriptor = computeDescriptorFromArgbPixels(
+            pixels = pixelScratch,
+            width = THUMB_WIDTH,
+            height = THUMB_HEIGHT,
+            timestampMs = timestampMs,
+            previous = previous
+        )
+        val thumb = if (captureThumbnail) {
+            Bitmap.createBitmap(THUMB_WIDTH, THUMB_HEIGHT, Bitmap.Config.RGB_565).apply {
+                setPixels(pixelScratch, 0, THUMB_WIDTH, 0, 0, THUMB_WIDTH, THUMB_HEIGHT)
+            }
+        } else {
+            null
+        }
+        return VideoFrameSnapshot(descriptor = descriptor, thumbnail = thumb)
+    }
+
+    fun descriptorSimilarity(a: VisualFrameDescriptor, b: VisualFrameDescriptor): Float {
+        val lumaSim = 1f - lumaL1Distance(a.lumaGrid, b.lumaGrid)
+        val histSim = 1f - histogramL1Distance(a.colorHistogram, b.colorHistogram)
+        return (0.50f * lumaSim + 0.50f * histSim).coerceIn(0f, 1f)
+    }
+
+    fun cornerSimilarity(a: FloatArray, b: FloatArray): Float {
+        return (1f - lumaL1Distance(a, b)).coerceIn(0f, 1f)
+    }
+
+    private fun lumaL1Distance(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size || a.isEmpty()) return 0f
+        var sum = 0f
+        for (i in a.indices) {
+            sum += abs(a[i] - b[i])
+        }
+        return ((sum / a.size.toFloat()) * 2.2f).coerceIn(0f, 1f)
     }
 
     private fun histogramL1Distance(a: FloatArray, b: FloatArray): Float {

@@ -3,6 +3,8 @@
 package com.example.commercialkiller.data.decision
 
 import com.example.commercialkiller.data.audio.ClassifierScore
+import com.example.commercialkiller.data.video.VisualFrameDescriptor
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 enum class MediaEnvironment {
@@ -15,6 +17,12 @@ enum class TvActionDecision {
     MUTE,
     UNMUTE,
     HOLD
+}
+
+enum class DecisionModality {
+    AUDIO_ONLY,
+    AUDIO_VIDEO,
+    VIDEO_ONLY_MUTED
 }
 
 data class MediaEvaluationResult(
@@ -33,7 +41,14 @@ data class FrameDecision(
     val sceneSimilarity: Float = 1.0f,
     val shotDurationMs: Long = 0L,
     val cutCadencePerMin: Float = 0f,
-    val recommendedAction: TvActionDecision = TvActionDecision.HOLD
+    val recommendedAction: TvActionDecision = TvActionDecision.HOLD,
+    val decisionModality: DecisionModality = DecisionModality.AUDIO_ONLY,
+    val visualChangeScore: Float = 0f,
+    val isKnownSceneAngle: Boolean = false,
+    val programReturnScore: Float = 0f,
+    val visualCutCadencePerMin: Float = 0f,
+    val isProgramAnchorFrozen: Boolean = false,
+    val bestAngleSimilarity: Float = 1.0f
 )
 
 data class SceneContinuityResult(
@@ -72,8 +87,17 @@ class FrameDecisionEngine(
         const val NON_MEDIA_STREAK_RESET_FRAMES = 3
         const val MUTE_CONSECUTIVE_COMMERCIAL_FRAMES = 3
         const val UNMUTE_CONSECUTIVE_PROGRAM_FRAMES = 5
+        const val VISUAL_STALE_TIMEOUT_MS = 1_500L
+        const val VISUAL_NOVEL_CUT_THRESHOLD = 0.35f
+        const val MIN_MUTE_HOLD_MS = 4_000L
+        const val MAX_MUTE_WATCHDOG_MS = 240_000L
+        const val UNMUTE_CONSECUTIVE_VIDEO_FRAMES = 6
+        const val PROGRAM_RETURN_UNMUTE_THRESHOLD = 0.80f
+        private const val RECENT_CUT_WINDOW_MS = 15_000L
         private const val INITIAL_BUFFER_CAPACITY = 128
     }
+
+    val programCache = ProgramFingerprintCache()
 
     private var sceneSimilarityThreshold: Float = clampSimilarityThreshold(initialSceneSimilarityThreshold)
     private var mediaThreshold: Float = clampMediaThreshold(initialMediaThreshold)
@@ -85,10 +109,21 @@ class FrameDecisionEngine(
     private var currentShotStartMs = 0L
     private var hasInitializedStart = false
     private val cutTimestampsMs = ArrayDeque<Long>(64)
+    private val novelVisualCutTimestampsMs = ArrayDeque<Long>(64)
 
     private var consecutiveCommercialFrames = 0
     private var consecutiveProgramFrames = 0
     private var consecutiveNonMediaFrames = 0
+
+    private var lastVisualTimestampMs = Long.MIN_VALUE
+    private var lastBlackFrameMs = Long.MIN_VALUE
+    private var lastAngleObservation = ActiveSceneObservation(
+        isKnownAngle = false,
+        bestAngleSimilarity = 1.0f,
+        activeAngleCount = 0
+    )
+    private var muteStartMs: Long? = null
+    private var consecutiveReturnVideoFrames = 0
 
     // Internal scratch fields populated by in-place helpers to avoid intermediate object allocations.
     private var lastIsMedia = false
@@ -181,18 +216,95 @@ class FrameDecisionEngine(
 
     /**
      * Evaluates media presence first (`is_media`), then scene continuity (`is_same_scene`),
-     * and finally gated commercial classification (`is_commercial`) and TV action decisions.
+     * and finally gated commercial classification (`is_commercial`) and TV action decisions across
+     * `AUDIO_ONLY`, `AUDIO_VIDEO`, or muted `VIDEO_ONLY_MUTED` modes.
      */
     fun evaluateFrame(
         melEnergies: FloatArray,
         classifierTags: List<ClassifierScore>,
         shiftDistance: Float,
-        timestampMs: Long
+        timestampMs: Long,
+        visualDescriptor: VisualFrameDescriptor? = null,
+        isTvMuted: Boolean = false
     ): FrameDecision {
+        val activeVisual = if (visualDescriptor != null &&
+            abs(timestampMs - visualDescriptor.timestampMs) <= VISUAL_STALE_TIMEOUT_MS
+        ) {
+            visualDescriptor
+        } else {
+            null
+        }
+        val visualFresh = activeVisual != null
+
+        if (isTvMuted && activeVisual != null) {
+            return evaluateMutedVideoOnlyFrame(activeVisual, timestampMs)
+        }
+
+        // Returning to unmuted monitoring clears mute-hold tracking and unfrozen break cache.
+        muteStartMs = null
+        consecutiveReturnVideoFrames = 0
+        if (programCache.isFrozen()) {
+            programCache.unfreeze()
+            clearBreakTrackingOnUnmute()
+        }
+
         updateSceneContinuityInternal(melEnergies, timestampMs)
         evaluateMediaPresenceInternal(melEnergies, classifierTags)
 
+        val audioSim = lastSceneSimilarity
+        val prelimNovelCuts = novelVisualCutTimestampsMs.size.toFloat()
+        if (lastIsMedia) {
+            val effectiveCadence = if (visualFresh) {
+                maxOf(lastCutCadencePerMin, prelimNovelCuts)
+            } else {
+                lastCutCadencePerMin
+            }
+            scoreCommercialInternal(melEnergies, classifierTags, shiftDistance, effectiveCadence)
+        }
+
+        var isNewVisualSample = false
+        if (activeVisual != null) {
+            val preMatch = programCache.scoreAgainstProgram(activeVisual)
+            val bugIntact = !preMatch.hasStableBug || preMatch.bugSimilarity >= 0.75f
+            val canLearnAngle = lastIsMedia && lastCommercialScore < 0.55f && bugIntact
+
+            isNewVisualSample = activeVisual.timestampMs != lastVisualTimestampMs
+            if (isNewVisualSample) {
+                lastVisualTimestampMs = activeVisual.timestampMs
+                if (activeVisual.isBlackFrame) {
+                    lastBlackFrameMs = activeVisual.timestampMs
+                }
+                val obs = programCache.observeActiveSceneFrame(
+                    descriptor = activeVisual,
+                    allowLearningNewAngle = canLearnAngle
+                )
+                lastAngleObservation = obs
+
+                val vChange = activeVisual.visualChangeScore.coerceIn(0f, 1f)
+                if (!obs.isKnownAngle && !activeVisual.isBlackFrame && vChange >= VISUAL_NOVEL_CUT_THRESHOLD) {
+                    novelVisualCutTimestampsMs.addLast(activeVisual.timestampMs)
+                }
+            }
+            pruneNovelVisualCuts(timestampMs)
+
+            val visualSim = if (lastAngleObservation.isKnownAngle) {
+                maxOf(lastAngleObservation.bestAngleSimilarity, 1f - activeVisual.visualChangeScore.coerceIn(0f, 1f))
+            } else {
+                (1f - activeVisual.visualChangeScore).coerceIn(0f, 1f)
+            }
+            lastSceneSimilarity = (0.55f * audioSim + 0.45f * visualSim).coerceIn(0f, 1f)
+            lastIsSameScene = if (lastAngleObservation.isKnownAngle &&
+                lastAngleObservation.bestAngleSimilarity >= ProgramFingerprintCache.KNOWN_ANGLE_SIMILARITY_THRESHOLD
+            ) {
+                audioSim >= (sceneSimilarityThreshold - 0.12f)
+            } else {
+                lastSceneSimilarity >= sceneSimilarityThreshold
+            }
+        }
+
+        val visualCutsPerMin = novelVisualCutTimestampsMs.size.toFloat()
         val recommendedAction: TvActionDecision
+
         if (!lastIsMedia) {
             lastIsCommercial = false
             lastCommercialScore = 0f
@@ -204,7 +316,21 @@ class FrameDecisionEngine(
             recommendedAction = TvActionDecision.HOLD
         } else {
             consecutiveNonMediaFrames = 0
-            scoreCommercialInternal(melEnergies, classifierTags, shiftDistance, lastCutCadencePerMin)
+
+            if (activeVisual != null) {
+                val fused = computeAudioVisualCommercialScore(
+                    audioScore = lastCommercialScore,
+                    visualDescriptor = activeVisual,
+                    visualCutsPerMin = visualCutsPerMin,
+                    timestampMs = timestampMs
+                )
+                lastCommercialScore = fused
+                lastIsCommercial = fused >= commercialThreshold
+
+                if (isNewVisualSample && !lastIsCommercial) {
+                    programCache.observeProgramFrame(activeVisual)
+                }
+            }
 
             if (lastIsCommercial) {
                 consecutiveCommercialFrames++
@@ -221,6 +347,10 @@ class FrameDecisionEngine(
                     TvActionDecision.UNMUTE
                 else -> TvActionDecision.HOLD
             }
+
+            if (recommendedAction == TvActionDecision.MUTE && visualFresh) {
+                programCache.freezeForBreak(timestampMs)
+            }
         }
 
         return FrameDecision(
@@ -233,8 +363,189 @@ class FrameDecisionEngine(
             sceneSimilarity = lastSceneSimilarity,
             shotDurationMs = lastShotDurationMs,
             cutCadencePerMin = lastCutCadencePerMin,
-            recommendedAction = recommendedAction
+            recommendedAction = recommendedAction,
+            decisionModality = if (visualFresh) DecisionModality.AUDIO_VIDEO else DecisionModality.AUDIO_ONLY,
+            visualChangeScore = visualDescriptor?.visualChangeScore ?: 0f,
+            isKnownSceneAngle = visualFresh && lastAngleObservation.isKnownAngle,
+            programReturnScore = 0f,
+            visualCutCadencePerMin = if (visualFresh) visualCutsPerMin else 0f,
+            isProgramAnchorFrozen = programCache.isFrozen(),
+            bestAngleSimilarity = if (visualFresh) lastAngleObservation.bestAngleSimilarity else 1.0f
         )
+    }
+
+    private fun evaluateMutedVideoOnlyFrame(
+        visualDescriptor: VisualFrameDescriptor,
+        timestampMs: Long
+    ): FrameDecision {
+        if (!programCache.isFrozen()) {
+            programCache.freezeForBreak(timestampMs)
+        }
+        val activeMuteStart = muteStartMs ?: timestampMs.also { muteStartMs = it }
+        val muteElapsedMs = (timestampMs - activeMuteStart).coerceAtLeast(0L)
+
+        val isNewVisual = visualDescriptor.timestampMs != lastVisualTimestampMs
+        if (isNewVisual) {
+            lastVisualTimestampMs = visualDescriptor.timestampMs
+            if (visualDescriptor.isBlackFrame) {
+                lastBlackFrameMs = visualDescriptor.timestampMs
+            }
+        }
+        pruneNovelVisualCuts(timestampMs)
+
+        val match = programCache.scoreAgainstProgram(visualDescriptor)
+        val vChange = visualDescriptor.visualChangeScore.coerceIn(0f, 1f)
+        val vSim = (1f - vChange).coerceIn(0f, 1f)
+        lastSceneSimilarity = vSim
+        lastIsSameScene = vSim >= sceneSimilarityThreshold
+
+        if (isNewVisual && !visualDescriptor.isBlackFrame &&
+            vChange >= VISUAL_NOVEL_CUT_THRESHOLD &&
+            match.prototypeSimilarity < ProgramFingerprintCache.KNOWN_ANGLE_SIMILARITY_THRESHOLD
+        ) {
+            novelVisualCutTimestampsMs.addLast(visualDescriptor.timestampMs)
+            pruneNovelVisualCuts(timestampMs)
+        }
+
+        val visualCutsPerMin = novelVisualCutTimestampsMs.size.toFloat()
+        val recentCuts15s = countRecentVisualCuts(timestampMs)
+
+        val returnScore = if (!match.isBaselineReady || visualDescriptor.isBlackFrame) {
+            0f
+        } else {
+            val sProto = match.prototypeSimilarity.coerceIn(0f, 1f)
+            val sBug = match.bugSimilarity.coerceIn(0f, 1f)
+            val sCadence = if (recentCuts15s <= 1 || sProto >= 0.80f) {
+                1.0f
+            } else {
+                (1.0f - ((recentCuts15s - 1) / 4f)).coerceIn(0f, 1f)
+            }
+            val gatedCadence = if (sProto >= 0.70f) sCadence else 0f
+            if (match.hasStableBug) {
+                (0.45f * sProto + 0.35f * sBug + 0.20f * gatedCadence).coerceIn(0f, 1f)
+            } else {
+                (0.80f * sProto + 0.20f * gatedCadence).coerceIn(0f, 1f)
+            }
+        }
+
+        if (isNewVisual) {
+            if (muteElapsedMs >= MIN_MUTE_HOLD_MS && returnScore >= PROGRAM_RETURN_UNMUTE_THRESHOLD) {
+                consecutiveReturnVideoFrames++
+            } else {
+                consecutiveReturnVideoFrames = 0
+            }
+        }
+
+        val watchdogReached = muteElapsedMs >= MAX_MUTE_WATCHDOG_MS
+        val sustainedReturn = muteElapsedMs >= MIN_MUTE_HOLD_MS &&
+            consecutiveReturnVideoFrames >= UNMUTE_CONSECUTIVE_VIDEO_FRAMES
+
+        val action = if (watchdogReached || sustainedReturn) {
+            programCache.unfreeze()
+            clearBreakTrackingOnUnmute()
+            muteStartMs = null
+            consecutiveReturnVideoFrames = 0
+            TvActionDecision.UNMUTE
+        } else {
+            TvActionDecision.HOLD
+        }
+
+        lastIsMedia = true
+        lastMediaScore = 1.0f
+        lastMediaEnvironment = MediaEnvironment.BROADCAST_MEDIA
+        lastIsCommercial = action != TvActionDecision.UNMUTE
+        lastCommercialScore = (1f - returnScore).coerceIn(0f, 1f)
+
+        return FrameDecision(
+            isMedia = true,
+            mediaScore = 1.0f,
+            mediaEnvironment = MediaEnvironment.BROADCAST_MEDIA,
+            isCommercial = lastIsCommercial,
+            commercialScore = lastCommercialScore,
+            isSameScene = lastIsSameScene,
+            sceneSimilarity = vSim,
+            shotDurationMs = muteElapsedMs,
+            cutCadencePerMin = visualCutsPerMin,
+            recommendedAction = action,
+            decisionModality = DecisionModality.VIDEO_ONLY_MUTED,
+            visualChangeScore = vChange,
+            isKnownSceneAngle = match.prototypeSimilarity >= ProgramFingerprintCache.KNOWN_ANGLE_SIMILARITY_THRESHOLD,
+            programReturnScore = returnScore,
+            visualCutCadencePerMin = visualCutsPerMin,
+            isProgramAnchorFrozen = programCache.isFrozen(),
+            bestAngleSimilarity = match.prototypeSimilarity
+        )
+    }
+
+    private fun computeAudioVisualCommercialScore(
+        audioScore: Float,
+        visualDescriptor: VisualFrameDescriptor,
+        visualCutsPerMin: Float,
+        timestampMs: Long
+    ): Float {
+        val match = programCache.scoreAgainstProgram(visualDescriptor)
+        val hasRecentBlack = lastBlackFrameMs != Long.MIN_VALUE &&
+            (timestampMs - lastBlackFrameMs) in 0L..1_500L &&
+            visualDescriptor.visualChangeScore >= 0.30f
+        val blackPulse = if (hasRecentBlack) 0.12f else 0f
+        val novelCadenceBoost = if (visualCutsPerMin >= 8f) 0.15f else 0f
+
+        if (!match.isBaselineReady) {
+            return (audioScore + blackPulse + novelCadenceBoost).coerceIn(0f, 1f)
+        }
+
+        val bugIntact = !match.hasStableBug || match.bugSimilarity >= 0.78f
+        if ((lastAngleObservation.isKnownAngle || match.prototypeSimilarity >= 0.82f) &&
+            match.prototypeSimilarity >= 0.78f &&
+            bugIntact
+        ) {
+            return (audioScore - 0.18f).coerceIn(0f, 1f)
+        }
+
+        val protoDivergence = (1f - match.prototypeSimilarity).coerceIn(0f, 1f)
+        val bugDrop = if (match.hasStableBug && match.bugSimilarity < 0.75f) 1.0f else 0f
+        val visualBreakScore = (protoDivergence * 0.55f + bugDrop * 0.25f + novelCadenceBoost + blackPulse).coerceIn(0f, 1f)
+        return maxOf(
+            audioScore * 0.85f,
+            audioScore * 0.70f + visualBreakScore * 0.55f
+        ).coerceIn(0f, 1f)
+    }
+
+    private fun pruneNovelVisualCuts(timestampMs: Long) {
+        val windowStart = timestampMs - CUT_WINDOW_MS
+        while (novelVisualCutTimestampsMs.isNotEmpty() && novelVisualCutTimestampsMs.first() < windowStart) {
+            novelVisualCutTimestampsMs.removeFirst()
+        }
+    }
+
+    private fun countRecentVisualCuts(timestampMs: Long): Int {
+        val start = timestampMs - RECENT_CUT_WINDOW_MS
+        var count = 0
+        for (ts in novelVisualCutTimestampsMs) {
+            if (ts >= start) count++
+        }
+        return count
+    }
+
+    fun onManualUnmute() {
+        programCache.unfreeze()
+        clearBreakTrackingOnUnmute()
+        muteStartMs = null
+        consecutiveReturnVideoFrames = 0
+    }
+
+    private fun clearBreakTrackingOnUnmute() {
+        cutTimestampsMs.clear()
+        novelVisualCutTimestampsMs.clear()
+        consecutiveCommercialFrames = 0
+        consecutiveProgramFrames = 0
+        lastBlackFrameMs = Long.MIN_VALUE
+        previousFrameLength = 0
+        hasInitializedStart = false
+    }
+
+    fun resetActiveSceneAngles() {
+        programCache.resetActiveSceneAngles()
     }
 
     fun reset() {
@@ -243,9 +554,20 @@ class FrameDecisionEngine(
         currentShotStartMs = 0L
         hasInitializedStart = false
         cutTimestampsMs.clear()
+        novelVisualCutTimestampsMs.clear()
         consecutiveCommercialFrames = 0
         consecutiveProgramFrames = 0
         consecutiveNonMediaFrames = 0
+        lastVisualTimestampMs = Long.MIN_VALUE
+        lastBlackFrameMs = Long.MIN_VALUE
+        lastAngleObservation = ActiveSceneObservation(
+            isKnownAngle = false,
+            bestAngleSimilarity = 1.0f,
+            activeAngleCount = 0
+        )
+        muteStartMs = null
+        consecutiveReturnVideoFrames = 0
+        programCache.clear()
         lastIsMedia = false
         lastMediaScore = 0f
         lastMediaEnvironment = MediaEnvironment.SILENCE

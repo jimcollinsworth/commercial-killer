@@ -1,6 +1,7 @@
 // Author Attribution: Co-authored by Project Owner & LLM-Gemini4Neon.
 package com.example.commercialkiller.ui.components
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,16 +17,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.sp
 
 /**
@@ -89,7 +92,31 @@ fun SpectrogramWaterfall(
     modifier: Modifier = Modifier,
     backgroundColor: Color = Color(0xFF0A0E17)
 ) {
-    val effectiveBands = numMelBands
+    val effectiveBands = numMelBands.coerceAtLeast(1)
+    val buffer = remember(effectiveBands) { WaterfallPingPongBuffer() }
+
+    val activeImage = remember(history, effectiveBands) {
+        if (history.isEmpty()) {
+            null
+        } else {
+            val totalFrames = history.size.coerceAtLeast(1)
+            val needed = totalFrames * effectiveBands
+            val slot = buffer.acquire(totalFrames, effectiveBands, needed)
+            val pixels = slot.pixels
+            for (t in 0 until totalFrames) {
+                val frame = history[t]
+                val limit = minOf(frame.size, effectiveBands)
+                for (m in 0 until effectiveBands) {
+                    val energy = if (m < limit) frame[m].coerceIn(0f, 1f) else 0f
+                    val row = effectiveBands - 1 - m
+                    pixels[row * totalFrames + t] = getThermalArgb(energy)
+                }
+            }
+            slot.bitmap.setPixels(pixels, 0, totalFrames, 0, 0, totalFrames, effectiveBands)
+            slot.imageBitmap
+        }
+    }
+
     Box(
         modifier = modifier
             .background(backgroundColor, RoundedCornerShape(8.dp))
@@ -97,55 +124,133 @@ fun SpectrogramWaterfall(
             .padding(4.dp)
     ) {
         Canvas(modifier = Modifier.matchParentSize()) {
-            if (history.isEmpty()) return@Canvas
-
-            val totalFrames = history.size
-            val cellWidth = size.width / totalFrames.coerceAtLeast(1)
-            val cellHeight = size.height / effectiveBands.coerceAtLeast(1)
-
-            for (t in 0 until totalFrames) {
-                val frame = history[t]
-                val x = t * cellWidth
-
-                for (m in 0 until minOf(frame.size, effectiveBands)) {
-                    val energy = frame[m].coerceIn(0f, 1f)
-                    // Invert y so low frequencies are at bottom, high frequencies at top
-                    val y = size.height - (m + 1) * cellHeight
-
-                    val cellColor = getThermalColor(energy)
-                    drawRect(
-                        color = cellColor,
-                        topLeft = Offset(x, y),
-                        size = Size(cellWidth + 0.5f, cellHeight + 0.5f)
-                    )
-                }
-            }
+            val img = activeImage ?: return@Canvas
+            val dstW = size.width.toInt().coerceAtLeast(1)
+            val dstH = size.height.toInt().coerceAtLeast(1)
+            drawImage(
+                image = img,
+                dstSize = IntSize(dstW, dstH),
+                filterQuality = FilterQuality.None
+            )
         }
     }
 }
 
 /**
- * Maps normalized energy [0.0, 1.0] to a thermal heatmap color ramp (Dark Navy -> Cyan -> Green -> Yellow -> Red).
+ * Compact equal-width audio Mel strip rendered per timeline segment (16x16 bitmap blit).
  */
-private fun getThermalColor(v: Float): Color {
-    return when {
+@Composable
+fun MiniMelStrip(
+    melStrip: List<FloatArray>,
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = Color(0xFF0A0E17)
+) {
+    val cols = melStrip.size
+    val bands = melStrip.firstOrNull()?.size ?: 16
+    val image = remember(melStrip, cols, bands) {
+        if (cols <= 0 || bands <= 0) {
+            null
+        } else {
+            val pixels = IntArray(cols * bands)
+            for (t in 0 until cols) {
+                val col = melStrip[t]
+                for (m in 0 until bands) {
+                    val energy = if (m < col.size) col[m].coerceIn(0f, 1f) else 0f
+                    val row = bands - 1 - m
+                    pixels[row * cols + t] = getThermalArgb(energy)
+                }
+            }
+            val bmp = Bitmap.createBitmap(cols, bands, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(pixels, 0, cols, 0, 0, cols, bands)
+            bmp.asImageBitmap()
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .background(backgroundColor, RoundedCornerShape(4.dp))
+            .border(1.dp, Color(0xFF1E3A5F), RoundedCornerShape(4.dp))
+            .padding(1.dp)
+    ) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val img = image ?: return@Canvas
+            val dstW = size.width.toInt().coerceAtLeast(1)
+            val dstH = size.height.toInt().coerceAtLeast(1)
+            drawImage(
+                image = img,
+                dstSize = IntSize(dstW, dstH),
+                filterQuality = FilterQuality.None
+            )
+        }
+    }
+}
+
+private class WaterfallSlot(
+    val width: Int,
+    val height: Int,
+    val pixels: IntArray,
+    val bitmap: Bitmap,
+    val imageBitmap: androidx.compose.ui.graphics.ImageBitmap
+)
+
+private class WaterfallPingPongBuffer {
+    private val slots = arrayOfNulls<WaterfallSlot>(2)
+    private var cursor = 0
+
+    fun acquire(width: Int, height: Int, neededPixels: Int): WaterfallSlot {
+        val idx = cursor
+        cursor = 1 - cursor
+        val existing = slots[idx]
+        if (existing != null && existing.width == width && existing.height == height) {
+            return existing
+        }
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val created = WaterfallSlot(
+            width = width,
+            height = height,
+            pixels = IntArray(neededPixels),
+            bitmap = bmp,
+            imageBitmap = bmp.asImageBitmap()
+        )
+        slots[idx] = created
+        return created
+    }
+}
+
+/**
+ * Maps normalized energy [0.0, 1.0] to an ARGB int along the thermal ramp.
+ */
+private fun getThermalArgb(v: Float): Int {
+    val r: Int
+    val g: Int
+    val b: Int
+    when {
         v < 0.2f -> {
             val t = v / 0.2f
-            Color(0, (t * 128).toInt(), (t * 255).toInt())
+            r = 0
+            g = (t * 128f).toInt().coerceIn(0, 255)
+            b = (t * 255f).toInt().coerceIn(0, 255)
         }
         v < 0.5f -> {
             val t = (v - 0.2f) / 0.3f
-            Color(0, 128 + (t * 127).toInt(), (255 * (1f - t)).toInt())
+            r = 0
+            g = (128 + (t * 127f).toInt()).coerceIn(0, 255)
+            b = (255f * (1f - t)).toInt().coerceIn(0, 255)
         }
         v < 0.8f -> {
             val t = (v - 0.5f) / 0.3f
-            Color((t * 255).toInt(), 255, 0)
+            r = (t * 255f).toInt().coerceIn(0, 255)
+            g = 255
+            b = 0
         }
         else -> {
             val t = (v - 0.8f) / 0.2f
-            Color(255, (255 * (1f - t)).toInt(), 0)
+            r = 255
+            g = (255f * (1f - t)).toInt().coerceIn(0, 255)
+            b = 0
         }
     }
+    return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 }
 
 /**

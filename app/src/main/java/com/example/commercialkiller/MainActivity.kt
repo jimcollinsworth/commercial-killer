@@ -39,8 +39,22 @@ class MainActivity : ComponentActivity() {
     handleIntent(intent)
   }
 
+  override fun onDestroy() {
+    super.onDestroy()
+    if (isFinishing) {
+      engine.close()
+    }
+  }
+
   private fun handleIntent(intent: Intent?) {
     if (intent == null) return
+    if (intent.hasExtra("auto_mute")) {
+      engine.setAutoMuteEnabled(intent.getBooleanExtra("auto_mute", true))
+    }
+    if (intent.hasExtra("simulate_muted_break")) {
+      engine.setSimulateMutedBreak(intent.getBooleanExtra("simulate_muted_break", false))
+    }
+
     val filePath = intent.getStringExtra("audio_file") ?: intent.getStringExtra("file")
     val uri = intent.data ?: (filePath?.let {
       if (it.startsWith("content://") || it.startsWith("file://")) {
@@ -51,6 +65,7 @@ class MainActivity : ComponentActivity() {
     })
 
     if (uri != null) {
+      engine.prepareForExternalFileIntent()
       lifecycleScope.launch {
         engine.loadAudioFile(this@MainActivity, uri)
       }
