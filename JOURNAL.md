@@ -1097,6 +1097,66 @@
   - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
 
 ---
+
+## 2026-11-23: External `.tflite`/`.litertlm` Model Staging, Stage 1/2 Toggles, In-App Model Manager & Stage 2 Calibration (v2.6)
+
+> [!NOTE] User Instructions & Guidance:
+> - *"whats an external linerlm model we could try and why? what are we using now? search hugging face for usefull models? others must be be doing similar analysis of media/ads"*
+> - *"you load the tflie and litertlm files on to the device (but not git) for 1 and 2, and we will need dynamic configuration/toggling of stage 1/2 processing so add toggle(s) to app. also need model selection option in app, from whats loaded to device and other. / some of the other models like: erikkaashoek/Comskip sound interesting, can we utilize or learn from that or others? make suggestions. /grill-me"*
+
+### Problem & Diagnosis
+1. **Unprovisioned External Model Paths**: In v2.5, neither a real AudioSet `.tflite` classifier nor an external `.litertlm` Stage 2 verifier was staged on target devices, leaving Stage 1 in DSP fallback and Stage 2 in `Stage 1 Active (No .litertlm model on device)`.
+2. **Stage 2 Quantization, Backend, and Prompt Collapse on Pixel 8**:
+   - Pixel 8 Mali-G715 OpenCL (`LITERT_CL`, emitting `gpu_model_builder.cc:4423 Weights preparation on Gpu is disabled for PowerVR, Broadcom, Mali GPUs`) stalled cold initialization for ~27 s and echoed the final prompt option token (`NON_MEDIA` / `OFF_AIR`) across tested runs on both `qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm` and `Qwen3-0.6B.litertlm`.
+   - `qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm` (4-bit block32) collapsed onto `NON_MEDIA` on symbolic key=value prompts (`cue=AD_BREAK_SIGNAL`, `cue=PROGRAM_RETURN`), whereas `Qwen3-0.6B.litertlm` (`613,722,264` bytes INT8) running on `Backend.CPU()` (`XNNPACK`) initialized before `#1` and accurately produced `#1 -> SILENCE` (`NON_MEDIA`) and `#2 -> COMMERCIAL` under natural-language framing (`Classify as COMMERCIAL, PROGRAM, or SILENCE. /no_think`).
+   - On `#3 Program Return Unmute`, passing muted microphone telemetry containing `tags=[Silence]` and `"TV audio is muted"` collided with the `"SILENCE"` option; additionally, `AudioWorkbenchEngine.kt` initially passed post-unmute `isTvCurrentlyMuted` instead of `mutedBeforeEval` on timeline segment verification.
+   - `emulator-5554` `/data` partition holds only `~550 MB` free (`5.1G / 5.8G` used), insufficient for copying a `347–613 MB` `.litertlm` archive alongside runtime memory (`1.67–1.92 GB` PSS on Pixel 8).
+3. **Architecture Scope Decision (`/grill-me` on Comskip / `adhush`)**: Deferred adding rule-based Comskip heuristics in `v2.6`; documented `v2.7` integration as normalized `0..1` feature/training signals (4-corner static edge logo mask, black-frame + silence co-occurrence, letterbox/pillarbox aspect shift, repeat-ad fingerprint distance) feeding generalized models rather than layered per-network thresholds.
+
+### Architecture, Staged Models & Code Changes (`LLM-Gemini4Neon`)
+- **Git Exclusions & App Version**: Appended `*.tflite` and `*.litertlm` to [`.gitignore`](file:///d:/projects/commercial-killer/.gitignore); incremented [`app/build.gradle.kts`](file:///d:/projects/commercial-killer/app/build.gradle.kts) to `versionCode = 18`, `versionName = "2.6"`; added `<uses-permission android:name="android.permission.INTERNET" />` in [`AndroidManifest.xml`](file:///d:/projects/commercial-killer/app/src/main/AndroidManifest.xml) for optional user-triggered catalog downloads.
+- **External Model Staging (Outside Git)**:
+  - Downloaded `yamnet.tflite` (`4,126,810` bytes) and staged to `files/models/audio/yamnet.tflite` on BOTH `emulator-5554` and Pixel 8 (`42170DLJH001WS`).
+  - Downloaded `qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm` (`347,251,840` bytes) and `Qwen3-0.6B.litertlm` (`613,722,264` bytes) and staged both into `files/models/lm/` on Pixel 8 (`42170DLJH001WS`), leaving `emulator-5554` Stage 1 + `yamnet.tflite` only due to `/data` space limits.
+- **Model Manager & Persistence (`ModelRepository.kt`)**:
+  - Created [`ModelRepository.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/model/ModelRepository.kt) implementing `ModelKind`, `Stage2Mode { OFF, AUDIT, VETO }`, `LocalModelEntry`, `CatalogModelSpec`, `ModelDownloadState`, `PipelinePreferences`, curated 4-model `CATALOG` (`yamnet_float32`, `qwen3_0_6b_nothink_q4`, `qwen3_0_6b_int8`, `gemma_4_e2b_it`), multi-directory scanning (`filesDir/models/audio`, `filesDir/models/lm`, `filesDir/models`, `filesDir`, `/data/local/tmp`), atomic SAF `OpenDocument` import, HTTP 5-hop redirect download with progress/cancellation, managed deletion, and `SharedPreferences` persistence.
+- **Dynamic Stage 1 / Stage 2 Controls & Stage 2 Calibration**:
+  - [`AudioClassifierEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/audio/AudioClassifierEngine.kt): Added `setUseNeuralModel`, `selectModelFile`, `isNeuralClassifierActive`, `getSelectedModelPath`, `resetBuffer`, external `.tflite` auto-discovery, `classifierLock`, and `16,000`-sample (`1.0 s`) rolling ring window for MediaPipe `AudioClassifier`.
+  - [`FrameDecisionEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/FrameDecisionEngine.kt): Extended `maxMediaTag` in `evaluateMediaPresenceInternal` with `"monologue"`, `"laughter"`, `"applause"`, `"cheering"`, `"crowd"`, `"announcer"`, `"instrument"`.
+  - [`LiteRtLmDecisionVerifier.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/decision/LiteRtLmDecisionVerifier.kt): Added `configureAsync(enabled, modelFile)` (`Backend.CPU()` first, `Backend.GPU()` fallback), `findModelFile` priority (`Qwen3-0.6B.litertlm` > `gemma-4-E2B` > `qwen3_0.6b_nothink`), `<think>` + last-token `parseConstrainedVerdict`, muted `[Silence]` tag replacement with `"video-only"`, `/no_think` toggle on INT8 Qwen3, greedy `SamplerConfig(topK = 1, topP = 0.9, temperature = 0.01)`, latency tracking `(Stage2Decision, Long)`, and `Log.i` diagnostics.
+  - [`AudioWorkbenchEngine.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngine.kt), [`MainActivity.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/MainActivity.kt), and [`MainScreen.kt`](file:///d:/projects/commercial-killer/app/src/main/java/com/example/commercialkiller/ui/main/MainScreen.kt): Wired `WorkbenchState` (`stage2LastLatencyMs`, `useNeuralAudioClassifier`, `videoFusionEnabled`, `stage2Mode`, available models, `modelDownloadState`), `Stage2Mode.VETO` hold (`1.5 s`, `3 s` cooldown) + `mutedBeforeEval` audit propagation, ADB intent extras (`stage1_neural`, `stage1_video`, `stage2_mode`), SAF file pickers, and `[ANALYSIS | MODELS]` tabbed `SpectrogramSettingsSheet`.
+- **Unit Tests**: Added [`ModelRepositoryTest.kt`](file:///d:/projects/commercial-killer/app/src/test/java/com/example/commercialkiller/data/model/ModelRepositoryTest.kt) (2 tests), expanded [`LiteRtLmDecisionVerifierTest.kt`](file:///d:/projects/commercial-killer/app/src/test/java/com/example/commercialkiller/data/decision/LiteRtLmDecisionVerifierTest.kt) (4 tests), and expanded [`AudioWorkbenchEngineTest.kt`](file:///d:/projects/commercial-killer/app/src/test/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngineTest.kt) (13 tests).
+
+### Verification Results
+- **Unit Tests, Build & 16 KB Page Alignment (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)**:
+  - `BUILD SUCCESSFUL in 32s` (`42 actionable tasks: 42 executed`), `0` Kotlin compiler warnings.
+  - **88/88** unit tests passed (`0` failures, `0` skipped, `0` errors) across all 16 XML test suites: `IrEmitterControllerTest` (4), `ProntoHexConverterTest` (3), `TvControlManagerTest` (4), `UsbIrDongleControllerTest` (3), `AudioClassifierEngineTest` (7), `AudioFileDecoderTest` (4), `AudioWorkbenchEngineTest` (13), `MelSpectrogramTest` (4), `SpectrogramComparatorTest` (4), `FrameDecisionEngineTest` (19), `LiteRtLmDecisionVerifierTest` (4), `ProgramFingerprintCacheTest` (3), `SessionSegmentTrackerTest` (6), `ModelRepositoryTest` (2), `VideoFrameAnalyzerTest` (6), and `MainScreenViewModelTest` (2).
+  - `zipalign.exe -c -P 16 -v 4 app\build\outputs\apk\debug\app-debug.apk`: `ZIPALIGN_16KB_OK`.
+- **Emulator Verification (`Medium_Phone_API_36.1`, `emulator-5554`, `yamnet.tflite` staged)**:
+  - Verified live AudioSet tags (`Music`, `Synthesizer`, `Keyboard (musical)`) and 3 macro segments on `show_angles_ad_return.mp4`.
+  - Verified `SpectrogramSettingsSheet` `[ANALYSIS | MODELS]` (`MODELS` tab listing `Active: yamnet.tflite`, `Stage 1 Audio Classifier (.tflite)`, `Stage 1 Video Fusion`, `Stage 2 [OFF | AUDIT | VETO]`, `REFRESH`, `BROWSE DEVICE...`, `yamnet.tflite ACTIVE DEL`, and curated catalog with `YAMNet` marked `INSTALLED`).
+  - Re-launched with `--ez stage1_video false --ez stage1_neural false` and verified via `android.exe layout --device=emulator-5554 --no-idle`: `AUD-ONLY | Media: 5% | 0.0s`, DSP fallback tag `Silence / Transition Gap`, and `0 px` vertical drift (`ShiftStatusBanner` `y=875..907`, `FrameDecisionBar` `y=1450..1479` & `y=1507..1536`, `ClassifierLabelsContent` `y=1583..1612`, `DistanceMeter` `y=1658..1690`, `SessionTimelineCard` `y=1753..1782`).
+- **Physical Pixel 8 Verification (`42170DLJH001WS`, `yamnet.tflite` + `Qwen3-0.6B.litertlm` INT8 CPU)**:
+  - Cold start (`LaunchState: COLD`, `1229 ms`, `pid 23208`), `show_angles_ad_return.mp4` (`AUDIT` mode, neural audio + video fusion enabled):
+    - `#1` startup silence audit (`5788 ms`): `raw=\n\nSILENCE` -> `S2:NON_MEDIA`
+    - `#2 Auto-Mute Triggered` (`5159 ms` loop 1, `4509 ms` loop 2): `raw=\n\nCOMMERCIAL` -> `S2:COMMERCIAL`
+    - `#3 Program Return Unmute` (`4452 ms` loop 1, `4355 ms` loop 2): `raw=\n\nPROGRAM` -> `S2:PROGRAM`
+  - `[ANALYSIS | MODELS]` expanded sheet confirmed `Stage 2 Ready (CPU): Qwen3-0.6B.litertlm`, `Last Verdict: PROGRAM (4355 ms)`, `Active: yamnet.tflite`.
+  - Mode toggle launches confirmed `stage2_mode=VETO` persisted in `commercial_killer_pipeline_prefs.xml` (ran `Stage2 [5616ms] parsed=NON_MEDIA` with `0` errors) and `stage2_mode=OFF` rendering `Stage 2 Disabled (Stage 1 Only)` in `android.exe layout`.
+  - Pixel 8 hardware metrics (`pid 23208`): `TOTAL PSS: 1,922,342 KB` (`Native Heap: 1,074,008 KB`, `Graphics: 68,916 KB`), `Thermal Status: 1` (`VIRTUAL-SKIN = 40.38°C`), `dumpsys gfxinfo`: `Total frames rendered: 1919`, `Janky frames: 617 (32.15%)`, `50th: 10ms`, `90th: 40ms`, `95th: 48ms`, `99th: 61ms`, GPU percentiles `3–5 ms`, `0` crashes/`AndroidRuntime`/16 KB errors.
+
+### Token & LLM Resource Log
+- **Session ID**: `85e16c9e-9045-40e8-8026-f3ac61135af7`
+- **Model Identifier**: `LLM-Gemini4Neon`
+- **Step Count**: `3534` (`step_index` verified in `transcript.jsonl`)
+- **Log Path**: `.system_generated/logs/transcript.jsonl`
+- **Token Accounting Status**: Managed at platform IDE host level.
+- **Empirical System Resources Utilized**:
+  - Gradle / JDK 21 JBR (`gradlew.bat testDebugUnitTest --rerun-tasks assembleDebug`)
+  - Android SDK Build-Tools `36.1.0` (`zipalign.exe`), `platform-tools` (`adb.exe`), `curl.exe`, and `android` CLI (`layout --no-idle`)
+  - Android Emulator `Medium_Phone_API_36.1` (`emulator-5554`) and Pixel 8 USB device (`42170DLJH001WS`)
+
+---
 *Author Attribution: Co-authored by Project Owner & LLM-Gemini3.8, LLM-Gemini4Argon, LLM-Gemini4Neon.*
 
 

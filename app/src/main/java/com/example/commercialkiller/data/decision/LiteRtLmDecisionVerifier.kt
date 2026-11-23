@@ -3,6 +3,7 @@ package com.example.commercialkiller.data.decision
 
 import android.content.Context
 import android.util.Log
+import com.example.commercialkiller.data.model.ModelRepository
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
@@ -59,50 +60,90 @@ class LiteRtLmDecisionVerifier(
     companion object {
         private const val TAG = "LiteRtLmVerifier"
         const val STATUS_STAGE_1_ONLY = "Stage 1 Active (No .litertlm model on device)"
+        const val STATUS_DISABLED = "Stage 2 Disabled (Stage 1 Only)"
 
         private const val SYSTEM_INSTRUCTION =
-            "You are a broadcast TV commercial transition classifier. " +
-                "Respond with exactly ONE token from {PROGRAM, COMMERCIAL, NON_MEDIA} and nothing else."
+            "You classify live TV stream status. Reply with exactly one word: COMMERCIAL, PROGRAM, or SILENCE."
 
         /**
-         * Resolves a local `.litertlm` model file outside the APK (`filesDir/models/`, `filesDir/`,
-         * or `/data/local/tmp/`). Never bundles large models in `assets/`.
+         * Resolves a local `.litertlm` model file outside the APK (`filesDir/models/lm/`,
+         * `filesDir/models/`, `filesDir/`, or `/data/local/tmp/`).
          */
         fun findModelFile(context: Context): File? {
-            val candidates = listOf(
-                File(context.filesDir, "models/gemma-4-E2B-it.litertlm"),
-                File(context.filesDir, "model.litertlm"),
-                File("/data/local/tmp/model.litertlm")
-            )
-            return candidates.firstOrNull { it.exists() && it.isFile && it.length() > 0L }
+            val entries = ModelRepository.scanModels(context).second
+            val preferred = entries.firstOrNull {
+                it.fileName.equals("Qwen3-0.6B.litertlm", ignoreCase = true)
+            } ?: entries.firstOrNull {
+                it.fileName.contains("gemma-4-E2B", ignoreCase = true)
+            } ?: entries.firstOrNull {
+                it.fileName.contains("qwen3_0.6b_nothink", ignoreCase = true)
+            } ?: entries.firstOrNull {
+                it.fileName.equals("model.litertlm", ignoreCase = true)
+            } ?: entries.firstOrNull()
+            return preferred?.let { File(it.absolutePath) }?.takeIf { it.exists() && it.isFile && it.length() > 0L }
         }
 
         /**
-         * Parses a single-token Stage 2 verdict from model output text.
+         * Parses a single-token Stage 2 verdict from model output text, stripping any optional
+         * `<think>...</think>` blocks emitted by reasoning models.
          */
         fun parseConstrainedVerdict(raw: String): Stage2Decision? {
-            val normalized = raw.trim().uppercase(Locale.US)
+            val stripped = raw
+                .replace(Regex("(?is)<think>.*?</think>"), " ")
+                .replace(Regex("(?is)</?think>"), " ")
+                .trim()
+            val normalized = stripped.uppercase(Locale.US)
             if (normalized.isEmpty()) return null
             val firstWord = normalized.split(Regex("\\s+|[.,:;!\\n]+")).firstOrNull { it.isNotEmpty() } ?: ""
             return when {
-                firstWord == "NON_MEDIA" || firstWord == "NON-MEDIA" || normalized.startsWith("NON_MEDIA") ->
+                firstWord == "NON_MEDIA" || firstWord == "NON-MEDIA" ||
+                    firstWord == "NO_MEDIA" || firstWord == "SILENCE" || firstWord == "OFF_AIR" ||
+                    normalized.startsWith("NON_MEDIA") || normalized.startsWith("SILENCE") || normalized.startsWith("OFF_AIR") ->
                     Stage2Decision.NON_MEDIA
                 firstWord == "COMMERCIAL" || normalized.startsWith("COMMERCIAL") ->
                     Stage2Decision.COMMERCIAL
                 firstWord == "PROGRAM" || normalized.startsWith("PROGRAM") ->
                     Stage2Decision.PROGRAM
-                normalized.contains("COMMERCIAL") -> Stage2Decision.COMMERCIAL
-                normalized.contains("NON_MEDIA") || normalized.contains("NON-MEDIA") -> Stage2Decision.NON_MEDIA
-                normalized.contains("PROGRAM") -> Stage2Decision.PROGRAM
-                else -> null
+                else -> when (Regex("\\b(NON_MEDIA|NON-MEDIA|NO_MEDIA|SILENCE|OFF_AIR|COMMERCIAL|PROGRAM)\\b").findAll(normalized).lastOrNull()?.value) {
+                    "COMMERCIAL" -> Stage2Decision.COMMERCIAL
+                    "NON_MEDIA", "NON-MEDIA", "NO_MEDIA", "SILENCE", "OFF_AIR" -> Stage2Decision.NON_MEDIA
+                    "PROGRAM" -> Stage2Decision.PROGRAM
+                    else -> null
+                }
             }
         }
 
-        fun buildPrompt(features: Stage2TransitionFeatures): String {
-            val tagsText = if (features.topTags.isEmpty()) "none" else features.topTags.take(3).joinToString(",")
+        fun buildPrompt(features: Stage2TransitionFeatures, noThink: Boolean = false): String {
+            val filteredTags = if (features.isTvMuted) {
+                features.topTags.filterNot { it.contains("silence", ignoreCase = true) }
+            } else {
+                features.topTags
+            }
+            val tagsText = when {
+                filteredTags.isNotEmpty() -> filteredTags.take(3).joinToString(",")
+                features.isTvMuted -> "video-only"
+                else -> "none"
+            }
+            val programReturn = features.isTvMuted &&
+                (features.prototypeSimilarity >= 0.55f || (features.hasStableBug && features.bugSimilarity >= 0.75f))
+            val silentRoom = !features.isTvMuted && features.mediaScore < 0.40f
+            val commercialBreak = !features.isTvMuted &&
+                (features.commercialScore >= 0.70f || (features.visualChangeScore >= 0.30f && features.prototypeSimilarity < 0.65f))
+            val summary = when {
+                programReturn ->
+                    "Main TV show program is actively playing on screen with matching video scene and channel logo"
+                silentRoom ->
+                    "Microphone hears empty room silence with no TV broadcast playing"
+                commercialBreak ->
+                    "TV broadcast switched to a commercial break with fast cuts and scene or logo departure"
+                else ->
+                    "Main TV show program is actively playing on screen"
+            }
+            val noThinkSuffix = if (noThink) " /no_think" else ""
             return String.format(
                 Locale.US,
-                "media=%.2f comm=%.2f dv=%.2f proto=%.2f bugStable=%s bugSim=%.2f cuts=%.1f muted=%s tags=[%s]. Answer:",
+                "Status: %s (media=%.2f comm=%.2f dv=%.2f proto=%.2f bugStable=%s bugSim=%.2f cuts=%.1f muted=%s tags=[%s]). Classify as COMMERCIAL, PROGRAM, or SILENCE.%s",
+                summary,
                 features.mediaScore,
                 features.commercialScore,
                 features.visualChangeScore,
@@ -111,7 +152,8 @@ class LiteRtLmDecisionVerifier(
                 features.bugSimilarity,
                 features.cutsPerMin,
                 features.isTvMuted,
-                tagsText
+                tagsText,
+                noThinkSuffix
             )
         }
     }
@@ -134,42 +176,100 @@ class LiteRtLmDecisionVerifier(
     @Volatile
     private var statusText: String = STATUS_STAGE_1_ONLY
 
+    @Volatile
+    private var activeModelPath: String? = null
+
+    @Volatile
+    private var lastLatencyMs: Long? = null
+
     fun getStatusText(): String = statusText
+
+    fun getActiveModelPath(): String? = activeModelPath
+
+    fun getLastLatencyMs(): Long? = lastLatencyMs
 
     fun isModelReady(): Boolean = isReady && !isClosed
 
     fun initializeAsync(onStatusChanged: (String) -> Unit = {}) {
+        configureAsync(enabled = true, modelFile = null) { status, _ ->
+            onStatusChanged(status)
+        }
+    }
+
+    /**
+     * Configures or switches the active `.litertlm` model dynamically off the main thread.
+     * Passing `enabled = false` unloads the native `Engine` while keeping this instance reusable.
+     */
+    fun configureAsync(
+        enabled: Boolean,
+        modelFile: File?,
+        onStatusChanged: (String, String?) -> Unit = { _, _ -> }
+    ) {
         val appContext = context?.applicationContext
-        if (appContext == null || isClosed) {
+        if (isClosed) return
+        if (!enabled) {
+            scope.launch {
+                mutex.withLock {
+                    if (isClosed) return@withLock
+                    closeEngineLocked()
+                    statusText = STATUS_DISABLED
+                    onStatusChanged(statusText, null)
+                }
+            }
+            return
+        }
+        if (appContext == null) {
             statusText = STATUS_STAGE_1_ONLY
-            onStatusChanged(statusText)
+            onStatusChanged(statusText, null)
             return
         }
 
         scope.launch {
             mutex.withLock {
-                if (isClosed || isReady) return@withLock
-                val modelFile = findModelFile(appContext)
-                if (modelFile == null) {
+                if (isClosed) return@withLock
+                val target = modelFile?.takeIf { it.exists() && it.isFile && it.length() > 0L }
+                    ?: findModelFile(appContext)
+                if (target == null) {
+                    closeEngineLocked()
                     statusText = STATUS_STAGE_1_ONLY
-                    onStatusChanged(statusText)
+                    onStatusChanged(statusText, null)
                     return@withLock
                 }
 
+                if (isReady && activeModelPath == target.absolutePath && engine != null) {
+                    onStatusChanged(statusText, activeModelPath)
+                    return@withLock
+                }
+
+                closeEngineLocked()
+                statusText = "Loading ${target.name}..."
+                onStatusChanged(statusText, null)
+
                 val cachePath = appContext.cacheDir.path
-                val loaded = tryInitialize(modelFile.absolutePath, Backend.GPU(), cachePath, "GPU")
-                    ?: tryInitialize(modelFile.absolutePath, Backend.CPU(), cachePath, "CPU")
+                // XNNPACK CPU avoids Mali OpenCL weight-prep omissions while keeping async Stage 2 off the audio loop.
+                val loaded = tryInitialize(target.absolutePath, Backend.CPU(), cachePath, "CPU")
+                    ?: tryInitialize(target.absolutePath, Backend.GPU(), cachePath, "GPU")
 
                 if (loaded != null) {
                     engine = loaded.first
+                    activeModelPath = target.absolutePath
                     isReady = true
-                    statusText = "Stage 2 Ready (${loaded.second}): ${modelFile.name}"
+                    statusText = "Stage 2 Ready (${loaded.second}): ${target.name}"
                 } else {
-                    statusText = "Stage 1 Active (${modelFile.name} load failed)"
+                    statusText = "Stage 1 Active (${target.name} load failed)"
                 }
-                onStatusChanged(statusText)
+                onStatusChanged(statusText, activeModelPath)
             }
         }
+    }
+
+    private fun closeEngineLocked() {
+        isReady = false
+        activeModelPath = null
+        try {
+            engine?.close()
+        } catch (ignored: Exception) {}
+        engine = null
     }
 
     private fun tryInitialize(
@@ -202,7 +302,8 @@ class LiteRtLmDecisionVerifier(
      */
     fun verifyTransitionAsync(
         features: Stage2TransitionFeatures,
-        onVerdict: (Stage2Decision) -> Unit
+        onErrorOrEmpty: (Long) -> Unit = {},
+        onVerdict: (Stage2Decision, Long) -> Unit
     ) {
         if (!isReady || isBusy || isClosed) return
 
@@ -212,19 +313,38 @@ class LiteRtLmDecisionVerifier(
                 if (!isReady || isClosed || activeEngine == null) return@withLock
                 isBusy = true
                 var conversation: Conversation? = null
+                val startNs = System.nanoTime()
                 try {
                     conversation = activeEngine.createConversation(
                         ConversationConfig(
                             systemInstruction = Contents.of(SYSTEM_INSTRUCTION),
-                            samplerConfig = SamplerConfig(topK = 4, topP = 0.9, temperature = 0.05)
+                            samplerConfig = SamplerConfig(topK = 1, topP = 0.9, temperature = 0.01)
                         )
                     )
-                    val raw = conversation.sendMessage(buildPrompt(features)).toString()
-                    parseConstrainedVerdict(raw)?.let(onVerdict)
+                    val useNoThink = activeModelPath?.contains("qwen3", ignoreCase = true) == true &&
+                        activeModelPath?.contains("nothink", ignoreCase = true) != true
+                    val prompt = buildPrompt(features, noThink = useNoThink)
+                    val raw = conversation.sendMessage(prompt).toString()
+                    val latencyMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                    lastLatencyMs = latencyMs
+                    val parsed = parseConstrainedVerdict(raw)
+                    try {
+                        Log.i(
+                            TAG,
+                            "Stage2 [${latencyMs}ms] parsed=$parsed | prompt=${prompt.replace("\n", " ")} | raw=${raw.replace("\n", "\\n")}"
+                        )
+                    } catch (ignored: Exception) {}
+                    if (parsed != null) {
+                        onVerdict(parsed, latencyMs)
+                    } else {
+                        onErrorOrEmpty(latencyMs)
+                    }
                 } catch (e: Exception) {
+                    val latencyMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
                     try {
                         Log.w(TAG, "Stage 2 transition check skipped: ${e.message}")
                     } catch (ignored: Exception) {}
+                    onErrorOrEmpty(latencyMs)
                 } finally {
                     try {
                         conversation?.close()

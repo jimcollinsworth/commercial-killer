@@ -23,3 +23,5 @@ test_assets/
 *.aac
 *.flac
 *.apk
+*.tflite
+*.litertlm

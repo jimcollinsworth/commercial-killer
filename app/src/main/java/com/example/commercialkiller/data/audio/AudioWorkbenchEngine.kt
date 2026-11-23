@@ -19,8 +19,16 @@ import com.example.commercialkiller.data.decision.FrameDecisionEngine
 import com.example.commercialkiller.data.decision.LiteRtLmDecisionVerifier
 import com.example.commercialkiller.data.decision.SessionSegment
 import com.example.commercialkiller.data.decision.SessionSegmentTracker
+import com.example.commercialkiller.data.decision.Stage2Decision
 import com.example.commercialkiller.data.decision.Stage2TransitionFeatures
 import com.example.commercialkiller.data.decision.TvActionDecision
+import com.example.commercialkiller.data.model.CatalogModelSpec
+import com.example.commercialkiller.data.model.LocalModelEntry
+import com.example.commercialkiller.data.model.ModelDownloadState
+import com.example.commercialkiller.data.model.ModelKind
+import com.example.commercialkiller.data.model.ModelRepository
+import com.example.commercialkiller.data.model.PipelinePreferences
+import com.example.commercialkiller.data.model.Stage2Mode
 import com.example.commercialkiller.data.video.VideoFrameSnapshot
 import com.example.commercialkiller.data.video.VisualFrameDescriptor
 import kotlinx.coroutines.CoroutineScope
@@ -34,6 +42,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,7 +90,16 @@ data class WorkbenchState(
     val sessionSegments: List<SessionSegment> = emptyList(),
     val simulateMutedBreak: Boolean = false,
     val stage2Status: String = LiteRtLmDecisionVerifier.STATUS_STAGE_1_ONLY,
-    val stage2LastVerdict: String? = null
+    val stage2LastVerdict: String? = null,
+    val stage2LastLatencyMs: Long? = null,
+    val useNeuralAudioClassifier: Boolean = true,
+    val selectedAudioModelPath: String? = null,
+    val availableAudioModels: List<LocalModelEntry> = emptyList(),
+    val videoFusionEnabled: Boolean = true,
+    val stage2Mode: Stage2Mode = Stage2Mode.AUDIT,
+    val selectedStage2ModelPath: String? = null,
+    val availableStage2Models: List<LocalModelEntry> = emptyList(),
+    val modelDownloadState: ModelDownloadState? = null
 ) {
     val isLiveMic: Boolean get() = sourceMode == AudioSourceMode.LIVE
 }
@@ -94,6 +112,12 @@ data class WorkbenchState(
 class AudioWorkbenchEngine(
     private val context: Context? = null
 ) : AutoCloseable {
+    companion object {
+        const val STAGE2_BORDERLINE_CEILING = 0.85f
+        const val STAGE2_VETO_HOLD_TIMEOUT_MS = 1_500L
+        const val STAGE2_VETO_COOLDOWN_MS = 3_000L
+    }
+
     private var calculator = MelSpectrogramCalculator(numMelBands = 80)
     private val comparator = SpectrogramComparator()
     private val classifier = AudioClassifierEngine(context)
@@ -118,6 +142,17 @@ class AudioWorkbenchEngine(
     private var sessionElapsedMs = 0L
     @Volatile
     private var lastSessionWallMs = 0L
+    @Volatile
+    private var pipelinePreferences: PipelinePreferences = ModelRepository.loadPreferences(context)
+    @Volatile
+    private var pendingVetoMuteStartMs: Long? = null
+    @Volatile
+    private var pendingVetoApproved = false
+    @Volatile
+    private var pendingApprovedVerdict: Pair<Stage2Decision, Long>? = null
+    @Volatile
+    private var vetoCooldownUntilMs = 0L
+    private var downloadJob: Job? = null
     private var mutedSimSilenceBuffer = FloatArray(0)
     private var isTvCurrentlyMuted = false
     private var isPaused = false
@@ -132,9 +167,56 @@ class AudioWorkbenchEngine(
     val state: StateFlow<WorkbenchState> = _state.asStateFlow()
 
     init {
+        val prefs = pipelinePreferences
         if (context != null) {
-            stage2Verifier.initializeAsync { status ->
-                _state.update { it.copy(stage2Status = status) }
+            val (audioModels, lmModels) = ModelRepository.scanModels(context)
+            val preferredAudio = prefs.selectedAudioModelPath
+                ?.let { File(it) }
+                ?.takeIf { it.exists() && it.isFile }
+            if (!prefs.useNeuralAudio) {
+                classifier.setUseNeuralModel(false)
+            } else if (preferredAudio != null && preferredAudio.absolutePath != classifier.getSelectedModelPath()) {
+                classifier.selectModelFile(preferredAudio)
+            }
+            val initialAudioPath = classifier.getSelectedModelPath() ?: prefs.selectedAudioModelPath
+            val initialStage2Path = prefs.selectedStage2ModelPath
+                ?.takeIf { File(it).exists() }
+                ?: lmModels.firstOrNull()?.absolutePath
+            _state.update { current ->
+                current.copy(
+                    activeClassifierModel = classifier.getActiveModelName(),
+                    useNeuralAudioClassifier = prefs.useNeuralAudio,
+                    selectedAudioModelPath = initialAudioPath,
+                    availableAudioModels = audioModels,
+                    videoFusionEnabled = prefs.videoFusionEnabled,
+                    stage2Mode = prefs.stage2Mode,
+                    selectedStage2ModelPath = initialStage2Path,
+                    availableStage2Models = lmModels,
+                    stage2Status = if (prefs.stage2Mode == Stage2Mode.OFF) {
+                        LiteRtLmDecisionVerifier.STATUS_DISABLED
+                    } else {
+                        current.stage2Status
+                    }
+                )
+            }
+            if (prefs.stage2Mode != Stage2Mode.OFF) {
+                val lmFile = initialStage2Path?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+                stage2Verifier.configureAsync(enabled = true, modelFile = lmFile) { status, activePath ->
+                    _state.update { current ->
+                        current.copy(
+                            stage2Status = status,
+                            selectedStage2ModelPath = activePath ?: current.selectedStage2ModelPath
+                        )
+                    }
+                }
+            }
+        } else {
+            _state.update { current ->
+                current.copy(
+                    useNeuralAudioClassifier = prefs.useNeuralAudio,
+                    videoFusionEnabled = prefs.videoFusionEnabled,
+                    stage2Mode = prefs.stage2Mode
+                )
             }
         }
     }
@@ -153,6 +235,7 @@ class AudioWorkbenchEngine(
 
         if (resetTimeline) {
             comparator.reset()
+            classifier.resetBuffer()
             decisionEngine.reset()
             segmentTracker.reset()
             sessionElapsedMs = 0L
@@ -160,6 +243,10 @@ class AudioWorkbenchEngine(
             lastVisualDescriptor = null
             latestVideoThumbForSegment = null
             isTvCurrentlyMuted = false
+            pendingVetoMuteStartMs = null
+            pendingVetoApproved = false
+            pendingApprovedVerdict = null
+            vetoCooldownUntilMs = 0L
         } else {
             lastSessionWallMs = System.currentTimeMillis()
         }
@@ -180,7 +267,8 @@ class AudioWorkbenchEngine(
                 latestVisualDescriptor = if (resetTimeline) null else current.latestVisualDescriptor,
                 latestVideoThumbnail = if (resetTimeline) null else current.latestVideoThumbnail,
                 sessionSegments = if (resetTimeline) emptyList() else current.sessionSegments,
-                stage2LastVerdict = if (resetTimeline) null else current.stage2LastVerdict
+                stage2LastVerdict = if (resetTimeline) null else current.stage2LastVerdict,
+                stage2LastLatencyMs = if (resetTimeline) null else current.stage2LastLatencyMs
             )
         }
 
@@ -244,9 +332,258 @@ class AudioWorkbenchEngine(
     }
 
     override fun close() {
+        downloadJob?.cancel()
+        downloadJob = null
         stop()
         stage2Verifier.close()
         classifier.close()
+    }
+
+    fun setUseNeuralAudioClassifier(enabled: Boolean) {
+        classifier.setUseNeuralModel(enabled)
+        val activeName = classifier.getActiveModelName()
+        val selectedPath = classifier.getSelectedModelPath() ?: pipelinePreferences.selectedAudioModelPath
+        updatePreferences {
+            it.copy(
+                useNeuralAudio = enabled,
+                selectedAudioModelPath = selectedPath
+            )
+        }
+        _state.update {
+            it.copy(
+                useNeuralAudioClassifier = enabled,
+                activeClassifierModel = activeName,
+                selectedAudioModelPath = selectedPath
+            )
+        }
+    }
+
+    fun selectAudioModel(path: String?) {
+        val file = path?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+        if (file == null) {
+            classifier.selectModelFile(null)
+            classifier.setUseNeuralModel(false)
+            val activeName = classifier.getActiveModelName()
+            updatePreferences { it.copy(useNeuralAudio = false, selectedAudioModelPath = null) }
+            _state.update {
+                it.copy(
+                    useNeuralAudioClassifier = false,
+                    selectedAudioModelPath = null,
+                    activeClassifierModel = activeName
+                )
+            }
+        } else {
+            classifier.setUseNeuralModel(true)
+            classifier.selectModelFile(file)
+            val activeName = classifier.getActiveModelName()
+            updatePreferences {
+                it.copy(
+                    useNeuralAudio = true,
+                    selectedAudioModelPath = file.absolutePath
+                )
+            }
+            _state.update {
+                it.copy(
+                    useNeuralAudioClassifier = true,
+                    selectedAudioModelPath = file.absolutePath,
+                    activeClassifierModel = activeName
+                )
+            }
+        }
+    }
+
+    fun setVideoFusionEnabled(enabled: Boolean) {
+        updatePreferences { it.copy(videoFusionEnabled = enabled) }
+        _state.update { it.copy(videoFusionEnabled = enabled) }
+    }
+
+    fun setStage2Mode(mode: Stage2Mode) {
+        pendingVetoMuteStartMs = null
+        pendingVetoApproved = false
+        pendingApprovedVerdict = null
+        vetoCooldownUntilMs = 0L
+        val targetPath = pipelinePreferences.selectedStage2ModelPath
+        updatePreferences { it.copy(stage2Mode = mode) }
+        _state.update {
+            it.copy(
+                stage2Mode = mode,
+                stage2Status = if (mode == Stage2Mode.OFF) {
+                    LiteRtLmDecisionVerifier.STATUS_DISABLED
+                } else {
+                    it.stage2Status
+                }
+            )
+        }
+        if (context != null) {
+            val file = targetPath?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+            stage2Verifier.configureAsync(enabled = mode != Stage2Mode.OFF, modelFile = file) { status, activePath ->
+                _state.update { current ->
+                    current.copy(
+                        stage2Status = status,
+                        selectedStage2ModelPath = activePath ?: current.selectedStage2ModelPath
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectStage2Model(path: String?) {
+        val file = path?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+        pendingVetoMuteStartMs = null
+        pendingVetoApproved = false
+        pendingApprovedVerdict = null
+        if (file == null) {
+            updatePreferences { it.copy(stage2Mode = Stage2Mode.OFF, selectedStage2ModelPath = null) }
+            _state.update {
+                it.copy(
+                    stage2Mode = Stage2Mode.OFF,
+                    selectedStage2ModelPath = null,
+                    stage2Status = LiteRtLmDecisionVerifier.STATUS_DISABLED
+                )
+            }
+            stage2Verifier.configureAsync(enabled = false, modelFile = null) { status, _ ->
+                _state.update { current -> current.copy(stage2Status = status) }
+            }
+        } else {
+            val nextMode = if (pipelinePreferences.stage2Mode == Stage2Mode.OFF) {
+                Stage2Mode.AUDIT
+            } else {
+                pipelinePreferences.stage2Mode
+            }
+            updatePreferences { it.copy(stage2Mode = nextMode, selectedStage2ModelPath = file.absolutePath) }
+            _state.update {
+                it.copy(
+                    stage2Mode = nextMode,
+                    selectedStage2ModelPath = file.absolutePath
+                )
+            }
+            stage2Verifier.configureAsync(enabled = true, modelFile = file) { status, activePath ->
+                _state.update { current ->
+                    current.copy(
+                        stage2Status = status,
+                        selectedStage2ModelPath = activePath ?: file.absolutePath
+                    )
+                }
+            }
+        }
+    }
+
+    fun refreshAvailableModels() {
+        val appContext = context ?: return
+        val (audioModels, lmModels) = ModelRepository.scanModels(appContext)
+        _state.update {
+            it.copy(
+                availableAudioModels = audioModels,
+                availableStage2Models = lmModels
+            )
+        }
+    }
+
+    fun importModelFromUri(uri: Uri, kind: ModelKind) {
+        val appContext = context ?: return
+        scope.launch {
+            val result = ModelRepository.importModelFromUri(appContext, uri, kind)
+            result.onSuccess { entry ->
+                refreshAvailableModels()
+                when (kind) {
+                    ModelKind.AUDIO_TFLITE -> selectAudioModel(entry.absolutePath)
+                    ModelKind.STAGE2_LITERTLM -> selectStage2Model(entry.absolutePath)
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        modelDownloadState = ModelDownloadState(
+                            modelId = "import_${kind.name}",
+                            fileName = kind.name,
+                            isDownloading = false,
+                            errorMessage = err.message ?: "Import failed"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun downloadCatalogModel(spec: CatalogModelSpec) {
+        val appContext = context ?: return
+        downloadJob?.cancel()
+        downloadJob = scope.launch {
+            _state.update {
+                it.copy(
+                    modelDownloadState = ModelDownloadState(
+                        modelId = spec.id,
+                        fileName = spec.fileName,
+                        bytesDownloaded = 0L,
+                        totalBytes = spec.expectedSizeBytes,
+                        isDownloading = true,
+                        errorMessage = null
+                    )
+                )
+            }
+            val result = ModelRepository.downloadCatalogModel(appContext, spec) { read, total ->
+                _state.update { current ->
+                    current.copy(
+                        modelDownloadState = ModelDownloadState(
+                            modelId = spec.id,
+                            fileName = spec.fileName,
+                            bytesDownloaded = read,
+                            totalBytes = total,
+                            isDownloading = true,
+                            errorMessage = null
+                        )
+                    )
+                }
+            }
+            result.onSuccess { entry ->
+                refreshAvailableModels()
+                _state.update { it.copy(modelDownloadState = null) }
+                when (spec.kind) {
+                    ModelKind.AUDIO_TFLITE -> selectAudioModel(entry.absolutePath)
+                    ModelKind.STAGE2_LITERTLM -> selectStage2Model(entry.absolutePath)
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        modelDownloadState = ModelDownloadState(
+                            modelId = spec.id,
+                            fileName = spec.fileName,
+                            bytesDownloaded = 0L,
+                            totalBytes = spec.expectedSizeBytes,
+                            isDownloading = false,
+                            errorMessage = err.message ?: "Download failed"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun cancelModelDownload() {
+        downloadJob?.cancel()
+        downloadJob = null
+        _state.update { it.copy(modelDownloadState = null) }
+    }
+
+    fun deleteManagedModel(entry: LocalModelEntry) {
+        val appContext = context ?: return
+        if (!ModelRepository.deleteManagedModel(appContext, entry)) return
+        refreshAvailableModels()
+        when (entry.kind) {
+            ModelKind.AUDIO_TFLITE -> if (_state.value.selectedAudioModelPath == entry.absolutePath) {
+                val fallback = _state.value.availableAudioModels.firstOrNull { it.absolutePath != entry.absolutePath }
+                selectAudioModel(fallback?.absolutePath)
+            }
+            ModelKind.STAGE2_LITERTLM -> if (_state.value.selectedStage2ModelPath == entry.absolutePath) {
+                val fallback = _state.value.availableStage2Models.firstOrNull { it.absolutePath != entry.absolutePath }
+                selectStage2Model(fallback?.absolutePath)
+            }
+        }
+    }
+
+    private fun updatePreferences(transform: (PipelinePreferences) -> PipelinePreferences) {
+        val updated = transform(pipelinePreferences)
+        pipelinePreferences = updated
+        ModelRepository.savePreferences(context, updated)
     }
 
     fun setThreshold(newThreshold: Float) {
@@ -368,6 +705,7 @@ class AudioWorkbenchEngine(
         val clampedProgress = progress.coerceIn(0f, 1f)
         filePlaybackOffset = (audio.samples.size * clampedProgress).toInt()
         isFileSeeking = true
+        classifier.resetBuffer()
         val posMs = (audio.durationMs * clampedProgress).toLong()
         _state.update { current ->
             current.copy(
@@ -507,7 +845,8 @@ class AudioWorkbenchEngine(
             )
         }
 
-        val visualSnapshot = lastVisualDescriptor
+        val prefs = pipelinePreferences
+        val visualSnapshot = if (prefs.videoFusionEnabled) lastVisualDescriptor else null
         val mutedBeforeEval = isTvCurrentlyMuted
         val decision = decisionEngine.evaluateFrame(
             melEnergies = melEnergies,
@@ -518,43 +857,149 @@ class AudioWorkbenchEngine(
             isTvMuted = mutedBeforeEval
         )
 
+        var effectiveAction = decision.recommendedAction
+        if (prefs.stage2Mode == Stage2Mode.VETO &&
+            stage2Verifier.isModelReady() &&
+            effectiveAction == TvActionDecision.MUTE &&
+            !isTvCurrentlyMuted &&
+            decision.commercialScore < STAGE2_BORDERLINE_CEILING
+        ) {
+            if (nowMs < vetoCooldownUntilMs) {
+                effectiveAction = TvActionDecision.HOLD
+            } else if (pendingVetoApproved) {
+                pendingVetoApproved = false
+                pendingVetoMuteStartMs = null
+            } else {
+                val pendingStart = pendingVetoMuteStartMs
+                if (pendingStart != null) {
+                    if (nowMs - pendingStart >= STAGE2_VETO_HOLD_TIMEOUT_MS) {
+                        pendingVetoMuteStartMs = null
+                        pendingVetoApproved = false
+                    } else {
+                        effectiveAction = TvActionDecision.HOLD
+                    }
+                } else {
+                    pendingVetoMuteStartMs = nowMs
+                    pendingVetoApproved = false
+                    effectiveAction = TvActionDecision.HOLD
+                    val tags = classificationScores.filter { it.score >= 0.10f }.map { it.label }
+                    val match = visualSnapshot?.let { decisionEngine.programCache.scoreAgainstProgram(it) }
+                    stage2Verifier.verifyTransitionAsync(
+                        features = Stage2TransitionFeatures(
+                            mediaScore = decision.mediaScore,
+                            commercialScore = decision.commercialScore,
+                            visualChangeScore = decision.visualChangeScore,
+                            prototypeSimilarity = match?.prototypeSimilarity ?: decision.bestAngleSimilarity,
+                            hasStableBug = match?.hasStableBug ?: false,
+                            bugSimilarity = match?.bugSimilarity ?: 0f,
+                            cutsPerMin = maxOf(decision.cutCadencePerMin, decision.visualCutCadencePerMin),
+                            topTags = tags,
+                            isTvMuted = isTvCurrentlyMuted
+                        ),
+                        onErrorOrEmpty = { latencyMs ->
+                            pendingVetoMuteStartMs = null
+                            pendingVetoApproved = true
+                            _state.update { it.copy(stage2LastLatencyMs = latencyMs) }
+                        }
+                    ) { verdict, latencyMs ->
+                        _state.update {
+                            it.copy(
+                                stage2LastVerdict = verdict.name,
+                                stage2LastLatencyMs = latencyMs
+                            )
+                        }
+                        if (verdict == Stage2Decision.COMMERCIAL) {
+                            pendingVetoApproved = true
+                            pendingApprovedVerdict = verdict to latencyMs
+                            recordEvent(
+                                logs,
+                                WorkbenchEvent(
+                                    timestamp = formatTimestamp(dateFormat),
+                                    distance = compResult.distance,
+                                    threshold = compResult.threshold,
+                                    description = "Stage 2 Confirmed Borderline Commercial (${latencyMs}ms)"
+                                )
+                            )
+                        } else {
+                            pendingVetoMuteStartMs = null
+                            pendingVetoApproved = false
+                            pendingApprovedVerdict = null
+                            vetoCooldownUntilMs = System.currentTimeMillis() + STAGE2_VETO_COOLDOWN_MS
+                            recordEvent(
+                                logs,
+                                WorkbenchEvent(
+                                    timestamp = formatTimestamp(dateFormat),
+                                    distance = compResult.distance,
+                                    threshold = compResult.threshold,
+                                    description = "Stage 2 Vetoed Borderline Mute (${verdict.name}, ${latencyMs}ms)"
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        } else if (effectiveAction != TvActionDecision.MUTE && pendingVetoMuteStartMs != null) {
+            pendingVetoMuteStartMs = null
+            pendingVetoApproved = false
+        }
+
+        val effectiveDecision = if (effectiveAction == decision.recommendedAction) {
+            decision
+        } else {
+            decision.copy(recommendedAction = effectiveAction)
+        }
+
         evaluateAutoMute(
-            recommendedAction = decision.recommendedAction,
+            recommendedAction = effectiveDecision.recommendedAction,
             logs = logs,
             dateFormat = dateFormat,
             distance = compResult.distance,
             threshold = compResult.threshold
         )
 
-        val (updatedSegments, openedSegment) = segmentTracker.onFrame(
+        var (updatedSegments, openedSegment) = segmentTracker.onFrame(
             timestampMs = elapsedMs,
-            decision = decision,
+            decision = effectiveDecision,
             melEnergies = melEnergies,
             thumbnail = latestVideoThumbForSegment
         )
 
-        if (openedSegment != null && stage2Verifier.isModelReady()) {
-            val tags = classificationScores.filter { it.score >= 0.10f }.map { it.label }
-            val match = visualSnapshot?.let { decisionEngine.programCache.scoreAgainstProgram(it) }
-            stage2Verifier.verifyTransitionAsync(
-                Stage2TransitionFeatures(
-                    mediaScore = decision.mediaScore,
-                    commercialScore = decision.commercialScore,
-                    visualChangeScore = decision.visualChangeScore,
-                    prototypeSimilarity = match?.prototypeSimilarity ?: decision.bestAngleSimilarity,
-                    hasStableBug = match?.hasStableBug ?: false,
-                    bugSimilarity = match?.bugSimilarity ?: 0f,
-                    cutsPerMin = maxOf(decision.cutCadencePerMin, decision.visualCutCadencePerMin),
-                    topTags = tags,
-                    isTvMuted = isTvCurrentlyMuted
-                )
-            ) { verdict ->
-                val withVerdict = segmentTracker.attachStage2Verdict(openedSegment.id, verdict.name)
+        if (openedSegment != null) {
+            val preVerdict = pendingApprovedVerdict
+            if (preVerdict != null) {
+                pendingApprovedVerdict = null
+                updatedSegments = segmentTracker.attachStage2Verdict(openedSegment.id, preVerdict.first.name)
                 _state.update {
                     it.copy(
-                        sessionSegments = withVerdict,
-                        stage2LastVerdict = verdict.name
+                        sessionSegments = updatedSegments,
+                        stage2LastVerdict = preVerdict.first.name,
+                        stage2LastLatencyMs = preVerdict.second
                     )
+                }
+            } else if (prefs.stage2Mode != Stage2Mode.OFF && stage2Verifier.isModelReady()) {
+                val tags = classificationScores.filter { it.score >= 0.10f }.map { it.label }
+                val match = visualSnapshot?.let { decisionEngine.programCache.scoreAgainstProgram(it) }
+                stage2Verifier.verifyTransitionAsync(
+                    Stage2TransitionFeatures(
+                        mediaScore = effectiveDecision.mediaScore,
+                        commercialScore = effectiveDecision.commercialScore,
+                        visualChangeScore = effectiveDecision.visualChangeScore,
+                        prototypeSimilarity = match?.prototypeSimilarity ?: effectiveDecision.bestAngleSimilarity,
+                        hasStableBug = match?.hasStableBug ?: false,
+                        bugSimilarity = match?.bugSimilarity ?: 0f,
+                        cutsPerMin = maxOf(effectiveDecision.cutCadencePerMin, effectiveDecision.visualCutCadencePerMin),
+                        topTags = tags,
+                        isTvMuted = mutedBeforeEval
+                    )
+                ) { verdict, latencyMs ->
+                    val withVerdict = segmentTracker.attachStage2Verdict(openedSegment.id, verdict.name)
+                    _state.update {
+                        it.copy(
+                            sessionSegments = withVerdict,
+                            stage2LastVerdict = verdict.name,
+                            stage2LastLatencyMs = latencyMs
+                        )
+                    }
                 }
             }
         }
@@ -571,7 +1016,7 @@ class AudioWorkbenchEngine(
                 tvControlMethod = tvControlManager.controlMethod.name,
                 eventLogs = snapshotLogs(logs),
                 classifierScores = classificationScores,
-                frameDecision = decision,
+                frameDecision = effectiveDecision,
                 sessionSegments = updatedSegments,
                 filePositionMs = filePositionMs ?: current.filePositionMs,
                 fileProgress = fileProgress ?: current.fileProgress

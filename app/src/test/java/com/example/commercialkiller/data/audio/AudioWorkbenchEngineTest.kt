@@ -5,7 +5,9 @@ package com.example.commercialkiller.data.audio
 
 import com.example.commercialkiller.data.decision.FrameDecision
 import com.example.commercialkiller.data.decision.FrameDecisionEngine
+import com.example.commercialkiller.data.decision.LiteRtLmDecisionVerifier
 import com.example.commercialkiller.data.decision.TvActionDecision
+import com.example.commercialkiller.data.model.Stage2Mode
 import com.example.commercialkiller.data.video.VideoFrameSnapshot
 import com.example.commercialkiller.data.video.VisualFrameDescriptor
 import org.junit.Assert.assertEquals
@@ -185,5 +187,28 @@ class AudioWorkbenchEngineTest {
 
         engine.setMediaThreshold(0.65f)
         assertEquals(0.65f, engine.state.value.mediaThreshold, 0.001f)
+    }
+
+    @Test
+    fun `dynamic Stage 1 and Stage 2 toggles update state without requiring device context`() {
+        val engine = AudioWorkbenchEngine()
+        assertTrue(engine.state.value.useNeuralAudioClassifier)
+        assertTrue(engine.state.value.videoFusionEnabled)
+        assertEquals(Stage2Mode.AUDIT, engine.state.value.stage2Mode)
+
+        engine.setUseNeuralAudioClassifier(false)
+        assertFalse(engine.state.value.useNeuralAudioClassifier)
+        assertEquals("DSP Acoustic Heuristic (Manual)", engine.state.value.activeClassifierModel)
+
+        engine.setVideoFusionEnabled(false)
+        assertFalse(engine.state.value.videoFusionEnabled)
+
+        engine.setStage2Mode(Stage2Mode.OFF)
+        assertEquals(Stage2Mode.OFF, engine.state.value.stage2Mode)
+        assertEquals(LiteRtLmDecisionVerifier.STATUS_DISABLED, engine.state.value.stage2Status)
+
+        engine.setStage2Mode(Stage2Mode.VETO)
+        assertEquals(Stage2Mode.VETO, engine.state.value.stage2Mode)
+        engine.close()
     }
 }

@@ -45,6 +45,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
@@ -60,6 +61,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -95,6 +97,12 @@ import com.example.commercialkiller.data.decision.FrameDecisionEngine
 import com.example.commercialkiller.data.decision.MediaEnvironment
 import com.example.commercialkiller.data.decision.SegmentLabel
 import com.example.commercialkiller.data.decision.SessionSegment
+import com.example.commercialkiller.data.model.CatalogModelSpec
+import com.example.commercialkiller.data.model.LocalModelEntry
+import com.example.commercialkiller.data.model.ModelDownloadState
+import com.example.commercialkiller.data.model.ModelKind
+import com.example.commercialkiller.data.model.ModelRepository
+import com.example.commercialkiller.data.model.Stage2Mode
 import com.example.commercialkiller.data.video.VideoFrameAnalyzer
 import com.example.commercialkiller.data.video.VideoFrameSnapshot
 import com.example.commercialkiller.data.video.VisualFrameDescriptor
@@ -135,6 +143,18 @@ fun MainScreen(
                 engine.loadAudioFile(context, it)
             }
         }
+    }
+
+    val importAudioModelLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { engine.importModelFromUri(it, ModelKind.AUDIO_TFLITE) }
+    }
+
+    val importStage2ModelLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { engine.importModelFromUri(it, ModelKind.STAGE2_LITERTLM) }
     }
 
     // Live MIC / CAM runtime permissions launcher
@@ -191,23 +211,27 @@ fun MainScreen(
         }
     }
 
-    // Settings panel sheet for spectrogram threshold and intervals
+    // Settings panel sheet for spectrogram threshold, intervals, pipeline toggles, and model management
     if (showSettingsSheet) {
         SpectrogramSettingsSheet(
-            intervalMs = state.intervalMs,
-            threshold = state.threshold,
-            numMelBands = state.numMelBands,
-            mediaThreshold = state.mediaThreshold,
-            sceneSimilarityThreshold = state.sceneSimilarityThreshold,
-            simulateMutedBreak = state.simulateMutedBreak,
-            stage2Status = state.stage2Status,
-            stage2LastVerdict = state.stage2LastVerdict,
+            state = state,
             onIntervalChanged = { engine.setInterval(it) },
             onThresholdChanged = { engine.setThreshold(it) },
             onMelBandsChanged = { engine.setMelBands(it) },
             onMediaThresholdChanged = { engine.setMediaThreshold(it) },
             onSceneSimilarityThresholdChanged = { engine.setSceneSimilarityThreshold(it) },
             onSimulateMutedBreakChanged = { engine.setSimulateMutedBreak(it) },
+            onToggleNeuralAudio = { engine.setUseNeuralAudioClassifier(it) },
+            onSelectAudioModel = { engine.selectAudioModel(it) },
+            onToggleVideoFusion = { engine.setVideoFusionEnabled(it) },
+            onSelectStage2Mode = { engine.setStage2Mode(it) },
+            onSelectStage2Model = { engine.selectStage2Model(it) },
+            onRefreshModels = { engine.refreshAvailableModels() },
+            onBrowseAudioModel = { importAudioModelLauncher.launch(arrayOf("*/*")) },
+            onBrowseStage2Model = { importStage2ModelLauncher.launch(arrayOf("*/*")) },
+            onDownloadModel = { engine.downloadCatalogModel(it) },
+            onCancelDownload = { engine.cancelModelDownload() },
+            onDeleteModel = { engine.deleteManagedModel(it) },
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -1817,29 +1841,41 @@ private fun FilePlaybackCard(
 }
 
 /**
- * Spectrogram & Analysis Settings Panel:
- * Controls the significance threshold (τ), first-gate media threshold, cosine similarity scene-cut
- * threshold, analysis interval, and Mel filterbank bands without consuming permanent main-screen space.
+ * Tabbed Settings Panel (`ANALYSIS` | `MODELS`):
+ * Hosts signal analysis parameters on the `ANALYSIS` tab and Stage 1/2 toggles, on-device model
+ * discovery/import, and the in-app download catalog on the `MODELS` tab without modifying main HUD bounds.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SpectrogramSettingsSheet(
-    intervalMs: Long,
-    threshold: Float,
-    numMelBands: Int,
-    mediaThreshold: Float,
-    sceneSimilarityThreshold: Float,
-    simulateMutedBreak: Boolean,
-    stage2Status: String,
-    stage2LastVerdict: String?,
+    state: WorkbenchState,
     onIntervalChanged: (Long) -> Unit,
     onThresholdChanged: (Float) -> Unit,
     onMelBandsChanged: (Int) -> Unit,
     onMediaThresholdChanged: (Float) -> Unit,
     onSceneSimilarityThresholdChanged: (Float) -> Unit,
     onSimulateMutedBreakChanged: (Boolean) -> Unit,
+    onToggleNeuralAudio: (Boolean) -> Unit,
+    onSelectAudioModel: (String?) -> Unit,
+    onToggleVideoFusion: (Boolean) -> Unit,
+    onSelectStage2Mode: (Stage2Mode) -> Unit,
+    onSelectStage2Model: (String?) -> Unit,
+    onRefreshModels: () -> Unit,
+    onBrowseAudioModel: () -> Unit,
+    onBrowseStage2Model: () -> Unit,
+    onDownloadModel: (CatalogModelSpec) -> Unit,
+    onCancelDownload: () -> Unit,
+    onDeleteModel: (LocalModelEntry) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var activeTab by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(activeTab) {
+        if (activeTab == 1) {
+            onRefreshModels()
+        }
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF1E293B),
@@ -1848,10 +1884,10 @@ private fun SpectrogramSettingsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .padding(horizontal = 18.dp, vertical = 8.dp)
                 .verticalScroll(rememberScrollState())
                 .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1859,7 +1895,7 @@ private fun SpectrogramSettingsSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "SPECTROGRAM & ANALYSIS SETTINGS",
+                    text = "PIPELINE & ANALYSIS SETTINGS",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
@@ -1874,279 +1910,821 @@ private fun SpectrogramSettingsSheet(
                 }
             }
 
-            // Threshold Slider
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Significance Threshold (τ)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                    Text(
-                        text = "%.2f".format(threshold),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF38BDF8)
-                    )
-                }
-                Text(
-                    text = "Acoustic shift delta required to trigger commercial transition",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-                Slider(
-                    value = threshold,
-                    onValueChange = onThresholdChanged,
-                    valueRange = 0.01f..0.30f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF38BDF8),
-                        activeTrackColor = Color(0xFF0284C7)
-                    )
-                )
-            }
-
-            // Media Detection Threshold Slider (Gate 1)
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Media Detection Threshold",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                    Text(
-                        text = "%.2f".format(mediaThreshold),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14B8A6)
-                    )
-                }
-                Text(
-                    text = "Minimum confidence to classify frame as broadcast TV/radio media rather than silence or room/car noise",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-                Slider(
-                    value = mediaThreshold.coerceIn(0.20f, 0.90f),
-                    onValueChange = onMediaThresholdChanged,
-                    valueRange = 0.20f..0.90f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF14B8A6),
-                        activeTrackColor = Color(0xFF0D9488)
-                    )
-                )
-            }
-
-            // Scene Cut Similarity Threshold Slider
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Scene Cut Similarity Threshold",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                    Text(
-                        text = "%.2f".format(sceneSimilarityThreshold),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF38BDF8)
-                    )
-                }
-                Text(
-                    text = "Cosine similarity floor between consecutive spectrogram frames; drops below this value trigger a scene cut",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-                Slider(
-                    value = sceneSimilarityThreshold.coerceIn(0.50f, 0.98f),
-                    onValueChange = onSceneSimilarityThresholdChanged,
-                    valueRange = 0.50f..0.98f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF38BDF8),
-                        activeTrackColor = Color(0xFF0284C7)
-                    )
-                )
-            }
-
-            // Interval Slider
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Analysis Interval",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                    Text(
-                        text = "$intervalMs ms",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF38BDF8)
-                    )
-                }
-                Text(
-                    text = "FFT computation and audio classifier polling frequency",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-                Slider(
-                    value = intervalMs.toFloat(),
-                    onValueChange = { onIntervalChanged(it.toLong()) },
-                    valueRange = 50f..500f,
-                    steps = 8,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF38BDF8),
-                        activeTrackColor = Color(0xFF0284C7)
-                    )
-                )
-            }
-
-            // Mel Bands Resolution Selector
-            Column {
-                Text(
-                    text = "Mel Filterbank Bands Resolution",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.LightGray
-                )
-                Text(
-                    text = "Higher band count increases frequency detail on spectrogram",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(40, 64, 80, 128).forEach { bands ->
-                        val isSelected = numMelBands == bands
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(34.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isSelected) Color(0xFF0284C7) else Color(0xFF0F172A))
-                                .border(
-                                    1.dp,
-                                    if (isSelected) Color(0xFF38BDF8) else Color(0xFF334155),
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .clickable { onMelBandsChanged(bands) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "$bands Bands",
-                                color = if (isSelected) Color.White else Color.LightGray,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Simulated TV Mute Toggle (FILE / VIDEO visual-only unmute testing)
+            // Segmented [ANALYSIS | MODELS] Tab Selector
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                    Text(
-                        text = "Simulate TV Mute (Video-Only Unmute)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                    Text(
-                        text = "Zeroes audio while TV MUTED in FILE / VIDEO mode to verify video-only program return detection",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
-                }
-                Switch(
-                    checked = simulateMutedBreak,
-                    onCheckedChange = onSimulateMutedBreakChanged,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = Color(0xFF0284C7),
-                        uncheckedThumbColor = Color(0xFF94A3B8),
-                        uncheckedTrackColor = Color(0xFF0F172A)
-                    )
-                )
-            }
-
-            // Stage 2 LiteRT-LM Cascade Status Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text(
-                        text = "STAGE 2 LITERT-LM CASCADE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF14B8A6),
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = stage2Status,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White,
-                        fontSize = 11.sp
-                    )
-                    if (stage2LastVerdict != null) {
-                        Spacer(modifier = Modifier.height(2.dp))
+                listOf(0 to "ANALYSIS", 1 to "MODELS").forEach { (tabIdx, label) ->
+                    val selected = activeTab == tabIdx
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (selected) Color(0xFF0284C7) else Color.Transparent)
+                            .clickable { activeTab = tabIdx },
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = "Last Transition Verdict: $stage2LastVerdict",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF38BDF8),
-                            fontSize = 11.sp
+                            text = label,
+                            color = if (selected) Color.White else Color(0xFF94A3B8),
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
 
-            // Classification Filter Policy Banner
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text(
-                        text = "CLASSIFIER DISPLAY POLICY",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF38BDF8),
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Classifications below 10% confidence are hidden. Confidence > 90% highlighted green; below 90% yellow.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
-                }
+            if (activeTab == 0) {
+                SettingsAnalysisTab(
+                    intervalMs = state.intervalMs,
+                    threshold = state.threshold,
+                    numMelBands = state.numMelBands,
+                    mediaThreshold = state.mediaThreshold,
+                    sceneSimilarityThreshold = state.sceneSimilarityThreshold,
+                    simulateMutedBreak = state.simulateMutedBreak,
+                    onIntervalChanged = onIntervalChanged,
+                    onThresholdChanged = onThresholdChanged,
+                    onMelBandsChanged = onMelBandsChanged,
+                    onMediaThresholdChanged = onMediaThresholdChanged,
+                    onSceneSimilarityThresholdChanged = onSceneSimilarityThresholdChanged,
+                    onSimulateMutedBreakChanged = onSimulateMutedBreakChanged
+                )
+            } else {
+                SettingsModelsTab(
+                    state = state,
+                    onToggleNeuralAudio = onToggleNeuralAudio,
+                    onSelectAudioModel = onSelectAudioModel,
+                    onToggleVideoFusion = onToggleVideoFusion,
+                    onSelectStage2Mode = onSelectStage2Mode,
+                    onSelectStage2Model = onSelectStage2Model,
+                    onRefreshModels = onRefreshModels,
+                    onBrowseAudioModel = onBrowseAudioModel,
+                    onBrowseStage2Model = onBrowseStage2Model,
+                    onDownloadModel = onDownloadModel,
+                    onCancelDownload = onCancelDownload,
+                    onDeleteModel = onDeleteModel
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+}
+
+@Composable
+private fun SettingsAnalysisTab(
+    intervalMs: Long,
+    threshold: Float,
+    numMelBands: Int,
+    mediaThreshold: Float,
+    sceneSimilarityThreshold: Float,
+    simulateMutedBreak: Boolean,
+    onIntervalChanged: (Long) -> Unit,
+    onThresholdChanged: (Float) -> Unit,
+    onMelBandsChanged: (Int) -> Unit,
+    onMediaThresholdChanged: (Float) -> Unit,
+    onSceneSimilarityThresholdChanged: (Float) -> Unit,
+    onSimulateMutedBreakChanged: (Boolean) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // Significance Threshold Slider
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Significance Threshold (τ)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = "%.2f".format(threshold),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF38BDF8)
+                )
+            }
+            Text(
+                text = "Acoustic shift delta required to trigger commercial transition",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Slider(
+                value = threshold,
+                onValueChange = onThresholdChanged,
+                valueRange = 0.01f..0.30f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF38BDF8),
+                    activeTrackColor = Color(0xFF0284C7)
+                )
+            )
+        }
+
+        // Media Detection Threshold Slider (Gate 1)
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Media Detection Threshold",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = "%.2f".format(mediaThreshold),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF14B8A6)
+                )
+            }
+            Text(
+                text = "Minimum confidence to classify frame as broadcast TV/radio media rather than silence or room/car noise",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Slider(
+                value = mediaThreshold.coerceIn(0.20f, 0.90f),
+                onValueChange = onMediaThresholdChanged,
+                valueRange = 0.20f..0.90f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF14B8A6),
+                    activeTrackColor = Color(0xFF0D9488)
+                )
+            )
+        }
+
+        // Scene Cut Similarity Threshold Slider
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Scene Cut Similarity Threshold",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = "%.2f".format(sceneSimilarityThreshold),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF38BDF8)
+                )
+            }
+            Text(
+                text = "Cosine similarity floor between consecutive spectrogram frames; drops below this value trigger a scene cut",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Slider(
+                value = sceneSimilarityThreshold.coerceIn(0.50f, 0.98f),
+                onValueChange = onSceneSimilarityThresholdChanged,
+                valueRange = 0.50f..0.98f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF38BDF8),
+                    activeTrackColor = Color(0xFF0284C7)
+                )
+            )
+        }
+
+        // Interval Slider
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Analysis Interval",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = "$intervalMs ms",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF38BDF8)
+                )
+            }
+            Text(
+                text = "FFT computation and audio classifier polling frequency",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Slider(
+                value = intervalMs.toFloat(),
+                onValueChange = { onIntervalChanged(it.toLong()) },
+                valueRange = 50f..500f,
+                steps = 8,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF38BDF8),
+                    activeTrackColor = Color(0xFF0284C7)
+                )
+            )
+        }
+
+        // Mel Bands Resolution Selector
+        Column {
+            Text(
+                text = "Mel Filterbank Bands Resolution",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.LightGray
+            )
+            Text(
+                text = "Higher band count increases frequency detail on spectrogram",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(40, 64, 80, 128).forEach { bands ->
+                    val isSelected = numMelBands == bands
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) Color(0xFF0284C7) else Color(0xFF0F172A))
+                            .border(
+                                1.dp,
+                                if (isSelected) Color(0xFF38BDF8) else Color(0xFF334155),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onMelBandsChanged(bands) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "$bands Bands",
+                            color = if (isSelected) Color.White else Color.LightGray,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        }
+
+        // Simulated TV Mute Toggle (FILE / VIDEO visual-only unmute testing)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(
+                    text = "Simulate TV Mute (Video-Only Unmute)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Text(
+                    text = "Zeroes audio while TV MUTED in FILE / VIDEO mode to verify video-only program return detection",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp
+                )
+            }
+            Switch(
+                checked = simulateMutedBreak,
+                onCheckedChange = onSimulateMutedBreakChanged,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = Color(0xFF0284C7),
+                    uncheckedThumbColor = Color(0xFF94A3B8),
+                    uncheckedTrackColor = Color(0xFF0F172A)
+                )
+            )
+        }
+
+        // Classification Filter Policy Banner
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                Text(
+                    text = "CLASSIFIER DISPLAY POLICY",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Classifications below 10% confidence are hidden. Confidence > 90% highlighted green; below 90% yellow.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsModelsTab(
+    state: WorkbenchState,
+    onToggleNeuralAudio: (Boolean) -> Unit,
+    onSelectAudioModel: (String?) -> Unit,
+    onToggleVideoFusion: (Boolean) -> Unit,
+    onSelectStage2Mode: (Stage2Mode) -> Unit,
+    onSelectStage2Model: (String?) -> Unit,
+    onRefreshModels: () -> Unit,
+    onBrowseAudioModel: () -> Unit,
+    onBrowseStage2Model: () -> Unit,
+    onDownloadModel: (CatalogModelSpec) -> Unit,
+    onCancelDownload: () -> Unit,
+    onDeleteModel: (LocalModelEntry) -> Unit
+) {
+    val switchColors = SwitchDefaults.colors(
+        checkedThumbColor = Color.White,
+        checkedTrackColor = Color(0xFF0284C7),
+        uncheckedThumbColor = Color(0xFF94A3B8),
+        uncheckedTrackColor = Color(0xFF0F172A)
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // 1. Pipeline Stage Controls
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "PIPELINE STAGE CONTROLS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF14B8A6),
+                    fontWeight = FontWeight.Bold
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Stage 1 Audio Classifier (.tflite)",
+                            color = Color.LightGray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Active: ${state.activeClassifierModel}",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Switch(
+                        checked = state.useNeuralAudioClassifier,
+                        onCheckedChange = onToggleNeuralAudio,
+                        colors = switchColors
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Stage 1 Video Fusion (A+V & Muted Return)",
+                            color = Color.LightGray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (state.videoFusionEnabled) {
+                                "Fuses 72-float visual frames and muted return checks"
+                            } else {
+                                "Audio-only mode (visual descriptors bypassed)"
+                            },
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.5.sp
+                        )
+                    }
+                    Switch(
+                        checked = state.videoFusionEnabled,
+                        onCheckedChange = onToggleVideoFusion,
+                        colors = switchColors
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Stage 2 LiteRT-LM Mode",
+                        color = Color.LightGray,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Stage2Mode.entries.forEach { mode ->
+                            val selected = state.stage2Mode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(32.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (selected) Color(0xFF0284C7) else Color(0xFF1E293B))
+                                    .border(
+                                        1.dp,
+                                        if (selected) Color(0xFF38BDF8) else Color(0xFF334155),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { onSelectStage2Mode(mode) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = mode.name,
+                                    color = if (selected) Color.White else Color(0xFF94A3B8),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = state.stage2Status,
+                        color = Color(0xFFCBD5E1),
+                        fontSize = 10.5.sp
+                    )
+                    if (state.stage2LastVerdict != null) {
+                        val latencySuffix = state.stage2LastLatencyMs?.let { " (${it} ms)" } ?: ""
+                        Text(
+                            text = "Last Verdict: ${state.stage2LastVerdict}$latencySuffix",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 10.5.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. On-Device Audio Models (.tflite)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "AUDIO MODELS (.tflite)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "REFRESH",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp))
+                                .clickable { onRefreshModels() }
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                        Text(
+                            text = "BROWSE DEVICE...",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFF0284C7))
+                                .clickable { onBrowseAudioModel() }
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                OnDeviceModelRow(
+                    title = "DSP Acoustic Heuristic (Built-in)",
+                    subtitle = "Signal RMS / ZCR / Pitch Correlation",
+                    isSelected = !state.useNeuralAudioClassifier,
+                    canDelete = false,
+                    onSelect = { onSelectAudioModel(null) },
+                    onDelete = {}
+                )
+
+                state.availableAudioModels.forEach { entry ->
+                    val isSelected = state.useNeuralAudioClassifier &&
+                        state.selectedAudioModelPath == entry.absolutePath
+                    val origin = if (entry.isManaged) "MANAGED" else "TMP"
+                    OnDeviceModelRow(
+                        title = entry.fileName,
+                        subtitle = "${formatSizeBytes(entry.sizeBytes)} - $origin",
+                        isSelected = isSelected,
+                        canDelete = entry.isManaged,
+                        onSelect = { onSelectAudioModel(entry.absolutePath) },
+                        onDelete = { onDeleteModel(entry) }
+                    )
+                }
+            }
+        }
+
+        // 3. On-Device Stage 2 Models (.litertlm)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "STAGE 2 MODELS (.litertlm)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "BROWSE DEVICE...",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFF0284C7))
+                            .clickable { onBrowseStage2Model() }
+                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
+                }
+
+                OnDeviceModelRow(
+                    title = "None (Stage 1 Only)",
+                    subtitle = "Disables LiteRT-LM verifier and unloads weights",
+                    isSelected = state.stage2Mode == Stage2Mode.OFF || state.selectedStage2ModelPath == null,
+                    canDelete = false,
+                    onSelect = { onSelectStage2Model(null) },
+                    onDelete = {}
+                )
+
+                state.availableStage2Models.forEach { entry ->
+                    val isSelected = state.stage2Mode != Stage2Mode.OFF &&
+                        state.selectedStage2ModelPath == entry.absolutePath
+                    val origin = if (entry.isManaged) "MANAGED" else "TMP"
+                    OnDeviceModelRow(
+                        title = entry.fileName,
+                        subtitle = "${formatSizeBytes(entry.sizeBytes)} - $origin",
+                        isSelected = isSelected,
+                        canDelete = entry.isManaged,
+                        onSelect = { onSelectStage2Model(entry.absolutePath) },
+                        onDelete = { onDeleteModel(entry) }
+                    )
+                }
+            }
+        }
+
+        // 4. In-App Download Catalog
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "CURATED MODEL DOWNLOAD CATALOG",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF14B8A6),
+                    fontWeight = FontWeight.Bold
+                )
+                ModelRepository.CATALOG.forEach { spec ->
+                    val installed = (state.availableAudioModels + state.availableStage2Models)
+                        .any { it.fileName.equals(spec.fileName, ignoreCase = true) }
+                    ModelCatalogRow(
+                        spec = spec,
+                        isInstalled = installed,
+                        downloadState = state.modelDownloadState,
+                        onDownload = { onDownloadModel(spec) },
+                        onCancel = onCancelDownload
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnDeviceModelRow(
+    title: String,
+    subtitle: String,
+    isSelected: Boolean,
+    canDelete: Boolean,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (isSelected) Color(0xFF1E3A5F) else Color(0xFF1E293B))
+            .border(
+                1.dp,
+                if (isSelected) Color(0xFF38BDF8) else Color(0xFF334155),
+                RoundedCornerShape(6.dp)
+            )
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                color = Color(0xFF94A3B8),
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (isSelected) {
+                Text(
+                    text = "ACTIVE",
+                    color = Color.White,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(Color(0xFF0D9488), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                )
+            }
+            if (canDelete) {
+                Text(
+                    text = "DEL",
+                    color = Color(0xFFF87171),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .border(1.dp, Color(0xFF7F1D1D), RoundedCornerShape(4.dp))
+                        .clickable(onClick = onDelete)
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelCatalogRow(
+    spec: CatalogModelSpec,
+    isInstalled: Boolean,
+    downloadState: ModelDownloadState?,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val isThisState = downloadState?.modelId == spec.id
+    val anyDownloading = downloadState?.isDownloading == true
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF1E293B))
+            .border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                Text(
+                    text = spec.displayName,
+                    color = Color.White,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = spec.description,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 10.sp
+                )
+            }
+            if (isThisState && downloadState.isDownloading) {
+                Text(
+                    text = "CANCEL",
+                    color = Color.White,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFFDC2626))
+                        .clickable(onClick = onCancel)
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            } else if (isInstalled) {
+                Text(
+                    text = "INSTALLED",
+                    color = Color.White,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(Color(0xFF16A34A), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                )
+            } else {
+                Text(
+                    text = "DOWNLOAD",
+                    color = if (anyDownloading) Color(0xFF64748B) else Color.White,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (anyDownloading) Color(0xFF334155) else Color(0xFF0284C7))
+                        .then(if (!anyDownloading) Modifier.clickable(onClick = onDownload) else Modifier)
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+
+        if (isThisState && downloadState.isDownloading) {
+            val total = downloadState.totalBytes.coerceAtLeast(1L)
+            val fraction = (downloadState.bytesDownloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+            LinearProgressIndicator(
+                progress = { fraction },
+                color = Color(0xFF38BDF8),
+                trackColor = Color(0xFF0F172A),
+                modifier = Modifier.fillMaxWidth().height(5.dp)
+            )
+            Text(
+                text = "${formatSizeBytes(downloadState.bytesDownloaded)} / ${formatSizeBytes(total)}",
+                color = Color(0xFFCBD5E1),
+                fontSize = 9.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        } else if (isThisState && !downloadState.errorMessage.isNullOrBlank()) {
+            Text(
+                text = downloadState.errorMessage,
+                color = Color(0xFFF87171),
+                fontSize = 10.sp
+            )
+        }
+    }
+}
+
+private fun formatSizeBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 B"
+    val mb = bytes / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        "%.2f GB".format(mb / 1024.0)
+    } else {
+        "%.1f MB".format(mb)
     }
 }

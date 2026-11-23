@@ -13,9 +13,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.example.commercialkiller.data.audio.AudioWorkbenchEngine
+import com.example.commercialkiller.data.model.Stage2Mode
 import com.example.commercialkiller.theme.CommercialKillerTheme
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
   private val engine by lazy { AudioWorkbenchEngine(applicationContext) }
@@ -53,6 +55,22 @@ class MainActivity : ComponentActivity() {
     }
     if (intent.hasExtra("simulate_muted_break")) {
       engine.setSimulateMutedBreak(intent.getBooleanExtra("simulate_muted_break", false))
+    }
+    if (intent.hasExtra("stage1_neural")) {
+      engine.setUseNeuralAudioClassifier(intent.getBooleanExtra("stage1_neural", true))
+    }
+    if (intent.hasExtra("stage1_video")) {
+      engine.setVideoFusionEnabled(intent.getBooleanExtra("stage1_video", true))
+    }
+    intent.getStringExtra("stage2_mode")?.let { modeStr ->
+      val parsed = try {
+        Stage2Mode.valueOf(modeStr.trim().uppercase(Locale.US))
+      } catch (ignored: Exception) {
+        null
+      }
+      if (parsed != null) {
+        engine.setStage2Mode(parsed)
+      }
     }
 
     val filePath = intent.getStringExtra("audio_file") ?: intent.getStringExtra("file")

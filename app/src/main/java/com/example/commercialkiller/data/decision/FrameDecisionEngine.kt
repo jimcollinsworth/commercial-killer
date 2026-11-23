@@ -603,9 +603,16 @@ class FrameDecisionEngine(
                 label.contains("radio", ignoreCase = true) ||
                 label.contains("television", ignoreCase = true) ||
                 label.contains("narration", ignoreCase = true) ||
+                label.contains("monologue", ignoreCase = true) ||
                 label.contains("conversation", ignoreCase = true) ||
                 label.contains("advertisement", ignoreCase = true) ||
-                label.contains("promo", ignoreCase = true)
+                label.contains("promo", ignoreCase = true) ||
+                label.contains("laughter", ignoreCase = true) ||
+                label.contains("applause", ignoreCase = true) ||
+                label.contains("cheering", ignoreCase = true) ||
+                label.contains("crowd", ignoreCase = true) ||
+                label.contains("announcer", ignoreCase = true) ||
+                label.contains("instrument", ignoreCase = true)
             ) {
                 if (score > maxMediaTag) maxMediaTag = score
             }

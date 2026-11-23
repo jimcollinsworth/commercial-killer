@@ -4,6 +4,7 @@ package com.example.commercialkiller.data.audio
 
 import android.content.Context
 import android.util.Log
+import com.example.commercialkiller.data.model.ModelRepository
 import com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifier
 import com.google.mediapipe.tasks.audio.core.RunningMode
 import com.google.mediapipe.tasks.components.containers.AudioData
@@ -35,8 +36,22 @@ class AudioClassifierEngine(
         private const val TAG = "AudioClassifierEngine"
         const val DEFAULT_MODEL_PATH = "yamnet.tflite"
         private const val FALLBACK_MODEL_NAME = "Acoustic Feature Classifier (HF Fallback)"
+        private const val FALLBACK_MANUAL_MODEL_NAME = "DSP Acoustic Heuristic (Manual)"
         private const val SAMPLE_RATE_HZ = 16000f
+        private const val NEURAL_WINDOW_SAMPLES = 16_000
     }
+
+    private val classifierLock = Any()
+    private val neuralLock = Any()
+    private val neuralRing = FloatArray(NEURAL_WINDOW_SAMPLES)
+    private val neuralWindow = FloatArray(NEURAL_WINDOW_SAMPLES)
+    private var neuralRingPos = 0
+    private var neuralRingFilled = false
+
+    @Volatile
+    private var useNeuralModel: Boolean = true
+    @Volatile
+    private var selectedModelPath: String? = null
 
     private var mediaPipeClassifier: AudioClassifier? = null
     private var cachedAudioData: AudioData? = null
@@ -77,47 +92,97 @@ class AudioClassifierEngine(
         initializeClassifier()
     }
 
+    fun setUseNeuralModel(enabled: Boolean) {
+        useNeuralModel = enabled
+        val explicit = selectedModelPath?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+        initializeClassifier(explicit)
+    }
+
+    fun selectModelFile(file: File?) {
+        selectedModelPath = file?.takeIf { it.exists() && it.isFile }?.absolutePath
+        if (useNeuralModel) {
+            initializeClassifier(file)
+        } else {
+            activeModelName = FALLBACK_MANUAL_MODEL_NAME
+        }
+    }
+
+    fun isNeuralClassifierActive(): Boolean = useNeuralModel && mediaPipeClassifier != null
+
+    fun getSelectedModelPath(): String? = selectedModelPath
+
+    fun resetBuffer() {
+        synchronized(neuralLock) {
+            neuralRing.fill(0f)
+            neuralWindow.fill(0f)
+            neuralRingPos = 0
+            neuralRingFilled = false
+        }
+    }
+
     /**
-     * Initializes the MediaPipe AudioClassifier using a custom file or bundled asset,
-     * falling back to spectral feature classification when no model asset is present.
+     * Initializes the MediaPipe AudioClassifier using an explicit file, discovered local
+     * `.tflite` model, or bundled asset, falling back to spectral feature classification when absent
+     * or manually disabled.
      */
     fun initializeClassifier(customModelFile: File? = null) {
+        if (!useNeuralModel) {
+            close()
+            activeModelName = FALLBACK_MANUAL_MODEL_NAME
+            return
+        }
         if (context == null) {
             logD("Context not provided; using acoustic spectral feature classifier.")
             activeModelName = FALLBACK_MODEL_NAME
             return
         }
 
-        close()
+        synchronized(classifierLock) {
+            closeInternalLocked()
 
-        try {
-            val baseOptionsBuilder = BaseOptions.builder()
-            val pendingModelName: String
+            try {
+                val baseOptionsBuilder = BaseOptions.builder()
+                val pendingModelName: String
 
-            if (customModelFile != null && customModelFile.exists()) {
-                val modelBuffer = readFileToDirectBuffer(customModelFile)
-                baseOptionsBuilder.setModelAssetBuffer(modelBuffer)
-                pendingModelName = customModelFile.name
-            } else {
-                baseOptionsBuilder.setModelAssetPath(DEFAULT_MODEL_PATH)
-                pendingModelName = DEFAULT_MODEL_PATH
+                val chosenFile = customModelFile?.takeIf { it.exists() && it.isFile }
+                    ?: selectedModelPath?.let { File(it) }?.takeIf { it.exists() && it.isFile }
+                    ?: discoverLocalTfliteModel(context)
+
+                if (chosenFile != null) {
+                    val modelBuffer = readFileToDirectBuffer(chosenFile)
+                    baseOptionsBuilder.setModelAssetBuffer(modelBuffer)
+                    selectedModelPath = chosenFile.absolutePath
+                    pendingModelName = chosenFile.name
+                } else {
+                    baseOptionsBuilder.setModelAssetPath(DEFAULT_MODEL_PATH)
+                    pendingModelName = DEFAULT_MODEL_PATH
+                }
+
+                val options = AudioClassifier.AudioClassifierOptions.builder()
+                    .setBaseOptions(baseOptionsBuilder.build())
+                    .setRunningMode(RunningMode.AUDIO_CLIPS)
+                    .setMaxResults(5)
+                    .build()
+
+                mediaPipeClassifier = AudioClassifier.createFromOptions(context, options)
+                activeModelName = pendingModelName
+                resetBuffer()
+            } catch (e: Exception) {
+                logW("Failed to initialize MediaPipe AudioClassifier: ${e.message}. Using fallback classifier.")
+                mediaPipeClassifier = null
+                cachedAudioData = null
+                cachedAudioDataLength = -1
+                activeModelName = FALLBACK_MODEL_NAME
             }
-
-            val options = AudioClassifier.AudioClassifierOptions.builder()
-                .setBaseOptions(baseOptionsBuilder.build())
-                .setRunningMode(RunningMode.AUDIO_CLIPS)
-                .setMaxResults(5)
-                .build()
-
-            mediaPipeClassifier = AudioClassifier.createFromOptions(context, options)
-            activeModelName = pendingModelName
-        } catch (e: Exception) {
-            logW("Failed to initialize MediaPipe AudioClassifier: ${e.message}. Using fallback classifier.")
-            mediaPipeClassifier = null
-            cachedAudioData = null
-            cachedAudioDataLength = -1
-            activeModelName = FALLBACK_MODEL_NAME
         }
+    }
+
+    private fun discoverLocalTfliteModel(ctx: Context): File? {
+        val audioEntries = ModelRepository.scanModels(ctx).first
+        val preferred = audioEntries.firstOrNull {
+            it.fileName.equals(DEFAULT_MODEL_PATH, ignoreCase = true)
+        } ?: audioEntries.firstOrNull()
+        return preferred?.let { File(it.absolutePath) }?.takeIf { it.exists() && it.isFile }
     }
 
     private fun readFileToDirectBuffer(file: File): ByteBuffer {
@@ -133,39 +198,89 @@ class AudioClassifierEngine(
     suspend fun classify(samples: FloatArray): List<ClassifierScore> = withContext(Dispatchers.Default) {
         if (samples.isEmpty()) return@withContext emptyList()
 
-        val classifier = mediaPipeClassifier
-        if (classifier != null) {
-            try {
-                val audioData = if (cachedAudioData != null && cachedAudioDataLength == samples.size) {
-                    cachedAudioData!!
-                } else {
-                    AudioData.create(audioFormat, samples.size).also {
-                        cachedAudioData = it
-                        cachedAudioDataLength = samples.size
-                    }
-                }
-                audioData.load(samples)
+        if (useNeuralModel) {
+            val neuralResult = synchronized(classifierLock) {
+                val classifier = mediaPipeClassifier
+                if (classifier != null) {
+                    try {
+                        val windowSamples = appendAndSnapshotNeuralWindow(samples)
+                        val audioData = if (cachedAudioData != null && cachedAudioDataLength == windowSamples.size) {
+                            cachedAudioData!!
+                        } else {
+                            AudioData.create(audioFormat, windowSamples.size).also {
+                                cachedAudioData = it
+                                cachedAudioDataLength = windowSamples.size
+                            }
+                        }
+                        audioData.load(windowSamples)
 
-                val result = classifier.classify(audioData)
-                val categories = result.classificationResults()
-                    .firstOrNull()
-                    ?.classifications()
-                    ?.firstOrNull()
-                    ?.categories()
-                if (!categories.isNullOrEmpty()) {
-                    val items = categories.take(3).map {
-                        ClassifierScore(label = it.categoryName(), score = it.score())
+                        val result = classifier.classify(audioData)
+                        val categories = result.classificationResults()
+                            .firstOrNull()
+                            ?.classifications()
+                            ?.firstOrNull()
+                            ?.categories()
+                        if (!categories.isNullOrEmpty()) {
+                            val items = categories.take(3).map {
+                                ClassifierScore(label = it.categoryName(), score = it.score())
+                            }
+                            padToThree(items)
+                        } else {
+                            null
+                        }
+                    } catch (e: Exception) {
+                        logE("Error running MediaPipe audio classification", e)
+                        null
                     }
-                    return@withContext padToThree(items)
+                } else {
+                    null
                 }
-            } catch (e: Exception) {
-                logE("Error running MediaPipe audio classification", e)
+            }
+            if (neuralResult != null) {
+                return@withContext neuralResult
             }
         }
 
         // Fallback Classifier: Acoustic Feature Analysis
         // Classifies audio into Speech, Music, Commercial / Jingle, or Silence based on spectral characteristics
         classifyByAcousticFeatures(samples)
+    }
+
+    private fun appendAndSnapshotNeuralWindow(samples: FloatArray): FloatArray {
+        synchronized(neuralLock) {
+            if (samples.size >= NEURAL_WINDOW_SAMPLES) {
+                val offset = samples.size - NEURAL_WINDOW_SAMPLES
+                System.arraycopy(samples, offset, neuralRing, 0, NEURAL_WINDOW_SAMPLES)
+                neuralRingPos = 0
+                neuralRingFilled = true
+            } else {
+                var i = 0
+                while (i < samples.size) {
+                    val space = NEURAL_WINDOW_SAMPLES - neuralRingPos
+                    val copyLen = minOf(space, samples.size - i)
+                    System.arraycopy(samples, i, neuralRing, neuralRingPos, copyLen)
+                    neuralRingPos += copyLen
+                    if (neuralRingPos >= NEURAL_WINDOW_SAMPLES) {
+                        neuralRingPos = 0
+                        neuralRingFilled = true
+                    }
+                    i += copyLen
+                }
+            }
+
+            if (!neuralRingFilled && neuralRingPos == 0) {
+                neuralWindow.fill(0f)
+                return neuralWindow
+            }
+            val headLen = NEURAL_WINDOW_SAMPLES - neuralRingPos
+            if (headLen > 0) {
+                System.arraycopy(neuralRing, neuralRingPos, neuralWindow, 0, headLen)
+            }
+            if (neuralRingPos > 0) {
+                System.arraycopy(neuralRing, 0, neuralWindow, headLen, neuralRingPos)
+            }
+            return neuralWindow
+        }
     }
 
     /**
@@ -339,6 +454,12 @@ class AudioClassifierEngine(
     fun getActiveModelName(): String = activeModelName
 
     fun close() {
+        synchronized(classifierLock) {
+            closeInternalLocked()
+        }
+    }
+
+    private fun closeInternalLocked() {
         try {
             mediaPipeClassifier?.close()
             mediaPipeClassifier = null
