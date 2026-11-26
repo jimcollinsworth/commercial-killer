@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>graphify - graphify-out/graph.html</title>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
+        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
+        crossorigin="anonymous"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
+  #graph { flex: 1; }
+  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
+  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
+  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  #search:focus { border-color: #4E79A7; }
+  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
+  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-item:hover { background: #2a2a4e; }
+  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
+  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
+  #info-content .field { margin-bottom: 5px; }
+  #info-content .field b { color: #e0e0e0; }
+  #info-content .empty { color: #555; font-style: italic; }
+  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
+  .neighbor-link:hover { background: #2a2a4e; }
+  #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
+  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
+  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
+  .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
+  .legend-item.dimmed { opacity: 0.35; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend-count { color: #666; font-size: 11px; }
+  #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
+  #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
+  #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
+  #legend-controls label:hover { color: #e0e0e0; }
+  .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
+  .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
+  .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
+  #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="sidebar">
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+  <div id="info-panel">
+    <h3>Node Info</h3>
+    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  </div>
+  <div id="legend-wrap">
+    <h3>Communities</h3>
+    <div id="legend-controls">
+      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+    </div>
+    <div id="legend"></div>
+  </div>
+  <div id="stats">31 nodes &middot; 91 edges &middot; 31 communities</div>
+</div>
+<script>
+const RAW_NODES = [{"id": "0", "label": "Audio Workbench Engine", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 40.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Audio Workbench Engine", "community": 0, "community_name": "Audio Workbench Engine", "source_file": "", "file_type": "", "degree": 16, "member_count": 67}, {"id": "1", "label": "Program Fingerprint Cache", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 39.6, "font": {"size": 12, "color": "#ffffff"}, "title": "Program Fingerprint Cache", "community": 1, "community_name": "Program Fingerprint Cache", "source_file": "", "file_type": "", "degree": 10, "member_count": 66}, {"id": "2", "label": "Frame Decision Engine", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 37.3, "font": {"size": 12, "color": "#ffffff"}, "title": "Frame Decision Engine", "community": 2, "community_name": "Frame Decision Engine", "source_file": "", "file_type": "", "degree": 9, "member_count": 61}, {"id": "3", "label": "Compose UI & Theme", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 34.2, "font": {"size": 12, "color": "#ffffff"}, "title": "Compose UI & Theme", "community": 3, "community_name": "Compose UI & Theme", "source_file": "", "file_type": "", "degree": 9, "member_count": 54}, {"id": "4", "label": "Model Repository & Downloads", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 34.2, "font": {"size": 12, "color": "#ffffff"}, "title": "Model Repository & Downloads", "community": 4, "community_name": "Model Repository & Downloads", "source_file": "", "file_type": "", "degree": 14, "member_count": 54}, {"id": "5", "label": "LiteRT Runtime & Verifier", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 32.8, "font": {"size": 12, "color": "#ffffff"}, "title": "LiteRT Runtime & Verifier", "community": 5, "community_name": "LiteRT Runtime & Verifier", "source_file": "", "file_type": "", "degree": 8, "member_count": 51}, {"id": "6", "label": "Pronto Hex & IR Tests", "color": {"background": "#B07AA1", "border": "#B07AA1", "highlight": {"background": "#ffffff", "border": "#B07AA1"}}, "size": 32.8, "font": {"size": 12, "color": "#ffffff"}, "title": "Pronto Hex & IR Tests", "community": 6, "community_name": "Pronto Hex & IR Tests", "source_file": "", "file_type": "", "degree": 14, "member_count": 51}, {"id": "7", "label": "Session Segment Timeline", "color": {"background": "#FF9DA7", "border": "#FF9DA7", "highlight": {"background": "#ffffff", "border": "#FF9DA7"}}, "size": 32.4, "font": {"size": 12, "color": "#ffffff"}, "title": "Session Segment Timeline", "community": 7, "community_name": "Session Segment Timeline", "source_file": "", "file_type": "", "degree": 7, "member_count": 50}, {"id": "8", "label": "MainActivity & Launcher Icons", "color": {"background": "#9C755F", "border": "#9C755F", "highlight": {"background": "#ffffff", "border": "#9C755F"}}, "size": 29.7, "font": {"size": 12, "color": "#ffffff"}, "title": "MainActivity & Launcher Icons", "community": 8, "community_name": "MainActivity & Launcher Icons", "source_file": "", "file_type": "", "degree": 10, "member_count": 44}, {"id": "9", "label": "Audio Classifier Engine", "color": {"background": "#BAB0AC", "border": "#BAB0AC", "highlight": {"background": "#ffffff", "border": "#BAB0AC"}}, "size": 25.7, "font": {"size": 12, "color": "#ffffff"}, "title": "Audio Classifier Engine", "community": 9, "community_name": "Audio Classifier Engine", "source_file": "", "file_type": "", "degree": 10, "member_count": 35}, {"id": "10", "label": "Navigation & Vector Icons", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 25.7, "font": {"size": 12, "color": "#ffffff"}, "title": "Navigation & Vector Icons", "community": 10, "community_name": "Navigation & Vector Icons", "source_file": "", "file_type": "", "degree": 7, "member_count": 35}, {"id": "11", "label": "USB IR Dongle Controller", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 25.2, "font": {"size": 12, "color": "#ffffff"}, "title": "USB IR Dongle Controller", "community": 11, "community_name": "USB IR Dongle Controller", "source_file": "", "file_type": "", "degree": 7, "member_count": 34}, {"id": "12", "label": "Mel Spectrogram Calculator", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 24.8, "font": {"size": 12, "color": "#ffffff"}, "title": "Mel Spectrogram Calculator", "community": 12, "community_name": "Mel Spectrogram Calculator", "source_file": "", "file_type": "", "degree": 4, "member_count": 33}, {"id": "13", "label": "TV Control & IR Database", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 24.3, "font": {"size": 12, "color": "#ffffff"}, "title": "TV Control & IR Database", "community": 13, "community_name": "TV Control & IR Database", "source_file": "", "file_type": "", "degree": 7, "member_count": 32}, {"id": "14", "label": "Workbench HUD Cards", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 23.4, "font": {"size": 12, "color": "#ffffff"}, "title": "Workbench HUD Cards", "community": 14, "community_name": "Workbench HUD Cards", "source_file": "", "file_type": "", "degree": 10, "member_count": 30}, {"id": "15", "label": "CameraX Preview & Analysis", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 22.5, "font": {"size": 12, "color": "#ffffff"}, "title": "CameraX Preview & Analysis", "community": 15, "community_name": "CameraX Preview & Analysis", "source_file": "", "file_type": "", "degree": 7, "member_count": 28}, {"id": "16", "label": "MainScreen ViewModel & Repo", "color": {"background": "#B07AA1", "border": "#B07AA1", "highlight": {"background": "#ffffff", "border": "#B07AA1"}}, "size": 22.1, "font": {"size": 12, "color": "#ffffff"}, "title": "MainScreen ViewModel & Repo", "community": 16, "community_name": "MainScreen ViewModel & Repo", "source_file": "", "file_type": "", "degree": 1, "member_count": 27}, {"id": "17", "label": "MainScreen Adaptive Layout", "color": {"background": "#FF9DA7", "border": "#FF9DA7", "highlight": {"background": "#ffffff", "border": "#FF9DA7"}}, "size": 21.2, "font": {"size": 12, "color": "#ffffff"}, "title": "MainScreen Adaptive Layout", "community": 17, "community_name": "MainScreen Adaptive Layout", "source_file": "", "file_type": "", "degree": 13, "member_count": 25}, {"id": "18", "label": "Audio File Decoder", "color": {"background": "#9C755F", "border": "#9C755F", "highlight": {"background": "#ffffff", "border": "#9C755F"}}, "size": 21.2, "font": {"size": 12, "color": "#ffffff"}, "title": "Audio File Decoder", "community": 18, "community_name": "Audio File Decoder", "source_file": "", "file_type": "", "degree": 4, "member_count": 25}, {"id": "19", "label": "Spectrogram Distance Comparator", "color": {"background": "#BAB0AC", "border": "#BAB0AC", "highlight": {"background": "#ffffff", "border": "#BAB0AC"}}, "size": 19.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Spectrogram Distance Comparator", "community": 19, "community_name": "Spectrogram Distance Comparator", "source_file": "", "file_type": "", "degree": 5, "member_count": 20}, {"id": "20", "label": "IR Emitter & NEC Pulses", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 17.2, "font": {"size": 12, "color": "#ffffff"}, "title": "IR Emitter & NEC Pulses", "community": 20, "community_name": "IR Emitter & NEC Pulses", "source_file": "", "file_type": "", "degree": 4, "member_count": 16}, {"id": "21", "label": "Spectrogram Waterfall Visualizers", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 16.7, "font": {"size": 12, "color": "#ffffff"}, "title": "Spectrogram Waterfall Visualizers", "community": 21, "community_name": "Spectrogram Waterfall Visualizers", "source_file": "", "file_type": "", "degree": 3, "member_count": 15}, {"id": "22", "label": "AppFunctions & Agent Skills", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 14.5, "font": {"size": 12, "color": "#ffffff"}, "title": "AppFunctions & Agent Skills", "community": 22, "community_name": "AppFunctions & Agent Skills", "source_file": "", "file_type": "", "degree": 0, "member_count": 10}, {"id": "23", "label": "ML Kit Prompt API Skill", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 13.1, "font": {"size": 12, "color": "#ffffff"}, "title": "ML Kit Prompt API Skill", "community": 23, "community_name": "ML Kit Prompt API Skill", "source_file": "", "file_type": "", "degree": 0, "member_count": 7}, {"id": "24", "label": "Navigation Keys", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 12.7, "font": {"size": 12, "color": "#ffffff"}, "title": "Navigation Keys", "community": 24, "community_name": "Navigation Keys", "source_file": "", "file_type": "", "degree": 1, "member_count": 6}, {"id": "25", "label": "Video TextureView Surface Listener", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 12.7, "font": {"size": 12, "color": "#ffffff"}, "title": "Video TextureView Surface Listener", "community": 25, "community_name": "Video TextureView Surface Listener", "source_file": "", "file_type": "", "degree": 2, "member_count": 6}, {"id": "26", "label": "Gradle Wrapper Script", "color": {"background": "#B07AA1", "border": "#B07AA1", "highlight": {"background": "#ffffff", "border": "#B07AA1"}}, "size": 12.2, "font": {"size": 12, "color": "#ffffff"}, "title": "Gradle Wrapper Script", "community": 26, "community_name": "Gradle Wrapper Script", "source_file": "", "file_type": "", "degree": 0, "member_count": 5}, {"id": "27", "label": "AGENTS.md Governance Rules", "color": {"background": "#FF9DA7", "border": "#FF9DA7", "highlight": {"background": "#ffffff", "border": "#FF9DA7"}}, "size": 11.8, "font": {"size": 12, "color": "#ffffff"}, "title": "AGENTS.md Governance Rules", "community": 27, "community_name": "AGENTS.md Governance Rules", "source_file": "", "file_type": "", "degree": 0, "member_count": 4}, {"id": "28", "label": "App Module Gradle Config", "color": {"background": "#9C755F", "border": "#9C755F", "highlight": {"background": "#ffffff", "border": "#9C755F"}}, "size": 10.4, "font": {"size": 12, "color": "#ffffff"}, "title": "App Module Gradle Config", "community": 28, "community_name": "App Module Gradle Config", "source_file": "", "file_type": "", "degree": 0, "member_count": 1}, {"id": "29", "label": "Root Gradle Build Config", "color": {"background": "#BAB0AC", "border": "#BAB0AC", "highlight": {"background": "#ffffff", "border": "#BAB0AC"}}, "size": 10.4, "font": {"size": 12, "color": "#ffffff"}, "title": "Root Gradle Build Config", "community": 29, "community_name": "Root Gradle Build Config", "source_file": "", "file_type": "", "degree": 0, "member_count": 1}, {"id": "30", "label": "Gradle Settings Config", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 10.4, "font": {"size": 12, "color": "#ffffff"}, "title": "Gradle Settings Config", "community": 30, "community_name": "Gradle Settings Config", "source_file": "", "file_type": "", "degree": 0, "member_count": 1}];
+const RAW_EDGES = [{"from": "0", "to": "14", "label": "13 cross-community edges", "title": "13 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "17", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "10", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "4", "label": "17 cross-community edges", "title": "17 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "2", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "7", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "5", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "13", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "8", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "18", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "1", "label": "6 cross-community edges", "title": "6 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "12", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "19", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "9", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "6", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "0", "to": "3", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "2", "label": "12 cross-community edges", "title": "12 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "15", "label": "6 cross-community edges", "title": "6 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "17", "label": "5 cross-community edges", "title": "5 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "6", "label": "10 cross-community edges", "title": "10 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "4", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "14", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "25", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "5", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "1", "to": "7", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "14", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "9", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "17", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "6", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "4", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "7", "label": "6 cross-community edges", "title": "6 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "2", "to": "19", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "11", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "13", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "21", "label": "11 cross-community edges", "title": "11 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "10", "label": "17 cross-community edges", "title": "17 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "17", "label": "40 cross-community edges", "title": "40 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "15", "label": "12 cross-community edges", "title": "12 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "8", "label": "6 cross-community edges", "title": "6 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "3", "to": "4", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "13", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "14", "label": "7 cross-community edges", "title": "7 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "20", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "17", "label": "9 cross-community edges", "title": "9 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "9", "label": "6 cross-community edges", "title": "6 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "5", "label": "7 cross-community edges", "title": "7 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "8", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "6", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "7", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "4", "to": "18", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "5", "to": "6", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "5", "to": "9", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "5", "to": "15", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "5", "to": "11", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "5", "to": "8", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "11", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "13", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "18", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "19", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "20", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "7", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "12", "label": "5 cross-community edges", "title": "5 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "16", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "6", "to": "9", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "7", "to": "14", "label": "5 cross-community edges", "title": "5 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "7", "to": "17", "label": "4 cross-community edges", "title": "4 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "10", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "14", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "11", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "15", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "17", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "8", "to": "9", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "9", "to": "12", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "9", "to": "18", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "9", "to": "11", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "9", "to": "19", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "10", "to": "13", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "10", "to": "14", "label": "5 cross-community edges", "title": "5 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "10", "to": "17", "label": "9 cross-community edges", "title": "9 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "10", "to": "15", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "11", "to": "20", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "11", "to": "13", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "12", "to": "19", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "13", "to": "20", "label": "2 cross-community edges", "title": "2 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "14", "to": "17", "label": "25 cross-community edges", "title": "25 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "14", "to": "21", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "14", "to": "15", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "15", "to": "17", "label": "13 cross-community edges", "title": "13 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "17", "to": "21", "label": "3 cross-community edges", "title": "3 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "17", "to": "25", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}, {"from": "17", "to": "24", "label": "1 cross-community edges", "title": "1 cross-community edges [AGGREGATED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "AGGREGATED"}];
+const LEGEND = [{"cid": 0, "color": "#4E79A7", "label": "Audio Workbench Engine", "count": 67}, {"cid": 1, "color": "#F28E2B", "label": "Program Fingerprint Cache", "count": 66}, {"cid": 2, "color": "#E15759", "label": "Frame Decision Engine", "count": 61}, {"cid": 3, "color": "#76B7B2", "label": "Compose UI &amp; Theme", "count": 54}, {"cid": 4, "color": "#59A14F", "label": "Model Repository &amp; Downloads", "count": 54}, {"cid": 5, "color": "#EDC948", "label": "LiteRT Runtime &amp; Verifier", "count": 51}, {"cid": 6, "color": "#B07AA1", "label": "Pronto Hex &amp; IR Tests", "count": 51}, {"cid": 7, "color": "#FF9DA7", "label": "Session Segment Timeline", "count": 50}, {"cid": 8, "color": "#9C755F", "label": "MainActivity &amp; Launcher Icons", "count": 44}, {"cid": 9, "color": "#BAB0AC", "label": "Audio Classifier Engine", "count": 35}, {"cid": 10, "color": "#4E79A7", "label": "Navigation &amp; Vector Icons", "count": 35}, {"cid": 11, "color": "#F28E2B", "label": "USB IR Dongle Controller", "count": 34}, {"cid": 12, "color": "#E15759", "label": "Mel Spectrogram Calculator", "count": 33}, {"cid": 13, "color": "#76B7B2", "label": "TV Control &amp; IR Database", "count": 32}, {"cid": 14, "color": "#59A14F", "label": "Workbench HUD Cards", "count": 30}, {"cid": 15, "color": "#EDC948", "label": "CameraX Preview &amp; Analysis", "count": 28}, {"cid": 16, "color": "#B07AA1", "label": "MainScreen ViewModel &amp; Repo", "count": 27}, {"cid": 17, "color": "#FF9DA7", "label": "MainScreen Adaptive Layout", "count": 25}, {"cid": 18, "color": "#9C755F", "label": "Audio File Decoder", "count": 25}, {"cid": 19, "color": "#BAB0AC", "label": "Spectrogram Distance Comparator", "count": 20}, {"cid": 20, "color": "#4E79A7", "label": "IR Emitter &amp; NEC Pulses", "count": 16}, {"cid": 21, "color": "#F28E2B", "label": "Spectrogram Waterfall Visualizers", "count": 15}, {"cid": 22, "color": "#E15759", "label": "AppFunctions &amp; Agent Skills", "count": 10}, {"cid": 23, "color": "#76B7B2", "label": "ML Kit Prompt API Skill", "count": 7}, {"cid": 24, "color": "#59A14F", "label": "Navigation Keys", "count": 6}, {"cid": 25, "color": "#EDC948", "label": "Video TextureView Surface Listener", "count": 6}, {"cid": 26, "color": "#B07AA1", "label": "Gradle Wrapper Script", "count": 5}, {"cid": 27, "color": "#FF9DA7", "label": "AGENTS.md Governance Rules", "count": 4}, {"cid": 28, "color": "#9C755F", "label": "App Module Gradle Config", "count": 1}, {"cid": 29, "color": "#BAB0AC", "label": "Root Gradle Build Config", "count": 1}, {"cid": 30, "color": "#4E79A7", "label": "Gradle Settings Config", "count": 1}];
+
+// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Build vis datasets
+const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({
+  id: n.id, label: n.label, color: n.color, size: n.size,
+  font: n.font, title: n.title,
+  // Fermat/golden-angle spiral seed positions (#3699): spreading nodes out
+  // before physics runs keeps avoidOverlap from computing near-zero-distance
+  // repulsion that blows the BarnesHut recursion into a stack overflow on large
+  // graphs. `i` is the map index — physics still settles small graphs identically.
+  x: 30 * Math.sqrt(i) * Math.cos(i * 2.4),
+  y: 30 * Math.sqrt(i) * Math.sin(i * 2.4),
+  community: n.community, community_name: n.community_name,
+  source_file: n.source_file, file_type: n.file_type, degree: n.degree,
+  member_count: n.member_count,
+})));
+
+const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({
+  id: i, from: e.from, to: e.to,
+  label: '',
+  title: e.title,
+  dashes: e.dashes,
+  width: e.width,
+  color: e.color,
+  arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+})));
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+  physics: {
+    enabled: true,
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {
+      gravitationalConstant: -60,
+      centralGravity: 0.005,
+      springLength: 120,
+      springConstant: 0.08,
+      damping: 0.4,
+      avoidOverlap: 0.8,
+    },
+    stabilization: { iterations: 200, fit: true },
+  },
+  interaction: {
+    hover: true,
+    tooltipDelay: 100,
+    hideEdgesOnDrag: true,
+    navigationButtons: false,
+    keyboard: false,
+  },
+  nodes: { shape: 'dot', borderWidth: 1.5 },
+  edges: { smooth: { type: 'continuous', roundness: 0.2 }, selectionWidth: 3 },
+});
+
+network.once('stabilizationIterationsDone', () => {
+  network.setOptions({ physics: { enabled: false } });
+});
+
+function showInfo(nodeId) {
+  const n = nodesDS.get(nodeId);
+  if (!n) return;
+  const neighborIds = network.getConnectedNodes(nodeId);
+  const neighborItems = neighborIds.map(nid => {
+    const nb = nodesDS.get(nid);
+    const color = nb ? nb.color.background : '#555';
+    return `<span class="neighbor-link" style="border-left-color:${esc(color)}" data-nid="${esc(nid)}">${esc(nb ? nb.label : nid)}</span>`;
+  }).join('');
+  const isMetaNode = !n.file_type && !n.source_file;
+  let html = `<div class="field"><b>${esc(n.label)}</b></div>`;
+  if (!isMetaNode) {
+    html += `<div class="field">Type: ${esc(n.file_type || 'unknown')}</div>`;
+  }
+  html += `<div class="field">Community: ${esc(n.community_name || '')}</div>`;
+  if (!isMetaNode) {
+    html += `<div class="field">Source: ${esc(n.source_file || '-')}</div>`;
+  } else if (n.member_count !== undefined && n.member_count !== null) {
+    html += `<div class="field">Members: ${esc(n.member_count)}</div>`;
+  }
+  html += `<div class="field">Degree: ${n.degree}</div>`;
+  if (neighborIds.length) {
+    html += `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${neighborIds.length})</div><div id="neighbors-list">${neighborItems}</div>`;
+  }
+  document.getElementById('info-content').innerHTML = html;
+}
+
+function focusNode(nodeId) {
+  network.focus(nodeId, { scale: 1.4, animation: true });
+  network.selectNodes([nodeId]);
+  showInfo(nodeId);
+}
+
+// Neighbor links use a data attribute + one delegated listener rather than an
+// inline onclick. A node id/label sourced from a document or a scraped URL
+// (graphify add) can contain a double-quote; dropping the stringified id
+// unescaped into a quoted onclick both broke every link and allowed a hostile
+// source to inject an event handler into the local report (stored XSS, #1838).
+// esc() on data-nid keeps the value inside the attribute; the listener reads it
+// back verbatim. Bound to document so it survives the innerHTML rebuild that
+// recreates #neighbors-list on each showInfo().
+document.addEventListener('click', e => {
+  const el = e.target.closest('.neighbor-link');
+  if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
+});
+
+// Track hovered node — hover detection is more reliable than click params
+let hoveredNodeId = null;
+network.on('hoverNode', params => {
+  hoveredNodeId = params.node;
+  container.style.cursor = 'pointer';
+});
+network.on('blurNode', () => {
+  hoveredNodeId = null;
+  container.style.cursor = 'default';
+});
+container.addEventListener('click', () => {
+  if (hoveredNodeId !== null) {
+    showInfo(hoveredNodeId);
+    network.selectNodes([hoveredNodeId]);
+  }
+});
+network.on('click', params => {
+  if (params.nodes.length > 0) {
+    showInfo(params.nodes[0]);
+  } else if (hoveredNodeId === null) {
+    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+  }
+});
+
+const searchInput = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  searchResults.innerHTML = '';
+  if (!q) { searchResults.style.display = 'none'; return; }
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  if (!matches.length) { searchResults.style.display = 'none'; return; }
+  searchResults.style.display = 'block';
+  matches.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    el.textContent = n.label;
+    el.style.borderLeft = `3px solid ${n.color.background}`;
+    el.style.paddingLeft = '8px';
+    el.onclick = () => {
+      network.focus(n.id, { scale: 1.5, animation: true });
+      network.selectNodes([n.id]);
+      showInfo(n.id);
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    };
+    searchResults.appendChild(el);
+  });
+});
+document.addEventListener('click', e => {
+  if (!searchResults.contains(e.target) && e.target !== searchInput)
+    searchResults.style.display = 'none';
+});
+
+const hiddenCommunities = new Set();
+
+const selectAllCb = document.getElementById('select-all-cb');
+
+function updateSelectAllState() {
+  const total = LEGEND.length;
+  const hidden = hiddenCommunities.size;
+  selectAllCb.checked = hidden === 0;
+  selectAllCb.indeterminate = hidden > 0 && hidden < total;
+}
+
+function toggleAllCommunities(hide) {
+  document.querySelectorAll('.legend-item').forEach(item => {
+    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
+  });
+  document.querySelectorAll('.legend-cb').forEach(cb => {
+    cb.checked = !hide;
+  });
+  LEGEND.forEach(c => {
+    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
+  });
+  const updates = RAW_NODES.map(n => ({ id: n.id, hidden: hide }));
+  nodesDS.update(updates);
+  updateSelectAllState();
+}
+
+const legendEl = document.getElementById('legend');
+LEGEND.forEach(c => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'legend-cb';
+  cb.checked = true;
+  cb.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (cb.checked) {
+      hiddenCommunities.delete(c.cid);
+      item.classList.remove('dimmed');
+    } else {
+      hiddenCommunities.add(c.cid);
+      item.classList.add('dimmed');
+    }
+    const updates = RAW_NODES
+      .filter(n => n.community === c.cid)
+      .map(n => ({ id: n.id, hidden: !cb.checked }));
+    nodesDS.update(updates);
+    updateSelectAllState();
+  });
+  item.innerHTML = `<div class="legend-dot" style="background:${c.color}"></div>
+    <span class="legend-label">${c.label}</span>
+    <span class="legend-count">${c.count}</span>`;
+  item.prepend(cb);
+  item.onclick = (e) => {
+    if (e.target === cb) return;
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change'));
+  };
+  legendEl.appendChild(item);
+});
+</script>
+<script>
+// Render hyperedges as shaded regions
+const hyperedges = [{"id": "hyper_commercial_killer_governance", "label": "Commercial Killer Governance & Planning Corpus", "nodes": ["27", "1", "9"]}, {"id": "hyper_mlkit_genai_skills", "label": "ML Kit GenAI Prompt and Agent Skills", "nodes": ["23", "22"]}, {"id": "hyper_stage1_stage2_cascade", "label": "Stage 1 & Stage 2 Multimodal Decision Pipeline", "nodes": ["2", "1", "5"]}];
+// afterDrawing passes ctx already transformed to network coordinate space.
+// Draw node positions raw — no manual pan/zoom/DPR math needed.
+
+// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
+// is what the perimeter must be traced in. Collinear and duplicate points
+// collapse to the extremes, so degenerate member sets render as a segment
+// rather than a zero-area crossed path.
+function convexHull(pts) {
+    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const build = seq => {
+        const out = [];
+        for (const q of seq) {
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+        }
+        out.pop();
+        return out;
+    };
+    const hull = build(p).concat(build(p.slice().reverse()));
+    return hull.length >= 3 ? hull : p;
+}
+network.on('afterDrawing', function(ctx) {
+    hyperedges.forEach(h => {
+        const positions = h.nodes
+            .map(nid => network.getPositions([nid])[nid])
+            .filter(p => p !== undefined);
+        if (positions.length < 2) return;
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = '#6366f1';
+        ctx.strokeStyle = '#6366f1';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        // Centroid and expanded hull in network coordinates.
+        // The perimeter must follow hull order, not h.nodes order: tracing the
+        // raw member order self-intersects whenever the layout does not happen
+        // to place members in angular order, filling as crossed wedges.
+        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
+        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
+        const hull = convexHull(positions);
+        const expanded = hull.map(p => ({
+            x: cx + (p.x - cx) * 1.15,
+            y: cy + (p.y - cy) * 1.15
+        }));
+        ctx.moveTo(expanded[0].x, expanded[0].y);
+        expanded.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 0.4;
+        ctx.stroke();
+        // Label
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#4f46e5';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(h.label, cx, cy - 5);
+        ctx.restore();
+    });
+});
+</script>
+</body>
+</html>
