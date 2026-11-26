@@ -1,9 +1,9 @@
 {
   "app/build.gradle.kts": {
-    "mtime": 1795655437.512373,
-    "seen": 1795655654.2546256,
-    "ast_hash": "9709fb79dbe4714e094532ff01462c9d",
-    "semantic_hash": "9709fb79dbe4714e094532ff01462c9d"
+    "mtime": 1795656418.4946017,
+    "seen": 1795659279.7877278,
+    "ast_hash": "7547ed5edf9fe6403bbd6cc08711a3bd",
+    "semantic_hash": "7547ed5edf9fe6403bbd6cc08711a3bd"
   },
   "app/src/androidTest/java/com/example/commercialkiller/ui/main/MainScreenTest.kt": {
     "mtime": 1790074798.4246309,
@@ -78,10 +78,10 @@
     "semantic_hash": "3217943453e91fcbd960f84fdbd8b9fd"
   },
   "app/src/main/java/com/example/commercialkiller/data/audio/AudioWorkbenchEngine.kt": {
-    "mtime": 1795655437.513407,
-    "seen": 1795655654.2546372,
-    "ast_hash": "0c8b89cf31f837353c516714d289d287",
-    "semantic_hash": "0c8b89cf31f837353c516714d289d287"
+    "mtime": 1795656540.1635084,
+    "seen": 1795659279.7877467,
+    "ast_hash": "3bae2d87f90b290e98455d2ea147e9ca",
+    "semantic_hash": "3bae2d87f90b290e98455d2ea147e9ca"
   },
   "app/src/main/java/com/example/commercialkiller/data/audio/MelSpectrogramCalculator.kt": {
     "mtime": 1790074798.4256308,
@@ -96,22 +96,22 @@
     "semantic_hash": "27f2650d3cca21b140001859475e242a"
   },
   "app/src/main/java/com/example/commercialkiller/data/decision/FrameDecisionEngine.kt": {
-    "mtime": 1795655437.5139418,
-    "seen": 1795655654.2546391,
-    "ast_hash": "7d31899874940ccf574c7591936e61fa",
-    "semantic_hash": "7d31899874940ccf574c7591936e61fa"
+    "mtime": 1795658069.091997,
+    "seen": 1795659279.7877502,
+    "ast_hash": "c687bd6e1fbbb410ae13a509e3b56e87",
+    "semantic_hash": "c687bd6e1fbbb410ae13a509e3b56e87"
   },
   "app/src/main/java/com/example/commercialkiller/data/decision/LiteRtLmDecisionVerifier.kt": {
-    "mtime": 1795655437.5139418,
-    "seen": 1795655654.2546394,
-    "ast_hash": "0dee3849ab35e3a023ebe46573a25aa3",
-    "semantic_hash": "0dee3849ab35e3a023ebe46573a25aa3"
+    "mtime": 1795657965.289408,
+    "seen": 1795659279.787751,
+    "ast_hash": "b110bf2250a422c1dbe7bdcbda5f161f",
+    "semantic_hash": "b110bf2250a422c1dbe7bdcbda5f161f"
   },
   "app/src/main/java/com/example/commercialkiller/data/decision/ProgramFingerprintCache.kt": {
-    "mtime": 1795655437.5139418,
-    "seen": 1795655654.2546399,
-    "ast_hash": "4021af3b1dbb29bcd12e10bc42210128",
-    "semantic_hash": "4021af3b1dbb29bcd12e10bc42210128"
+    "mtime": 1795657987.7889707,
+    "seen": 1795659279.7877517,
+    "ast_hash": "a4b5926ca0661f96fa782453594fa4cc",
+    "semantic_hash": "a4b5926ca0661f96fa782453594fa4cc"
   },
   "app/src/main/java/com/example/commercialkiller/data/decision/SessionSegmentTracker.kt": {
     "mtime": 1795655437.5144565,
@@ -126,10 +126,10 @@
     "semantic_hash": "c478b970aacfb88f6ca0471359afab03"
   },
   "app/src/main/java/com/example/commercialkiller/data/video/VideoFrameSampler.kt": {
-    "mtime": 1795655437.5144565,
-    "seen": 1795655654.2546413,
-    "ast_hash": "9c5b621c79903ad74ebf9701128cb4bc",
-    "semantic_hash": "9c5b621c79903ad74ebf9701128cb4bc"
+    "mtime": 1795657964.3732686,
+    "seen": 1795659279.7877548,
+    "ast_hash": "7195416e335e8e1358417ded5d87bbdd",
+    "semantic_hash": "7195416e335e8e1358417ded5d87bbdd"
   },
   "app/src/main/java/com/example/commercialkiller/theme/Color.kt": {
     "mtime": 1790074798.4256308,
@@ -246,22 +246,22 @@
     "semantic_hash": "3f5c285659f76c208abe83acbfd7f492"
   },
   "app/src/test/java/com/example/commercialkiller/data/decision/FrameDecisionEngineTest.kt": {
-    "mtime": 1795655437.5171742,
-    "seen": 1795655654.2546525,
-    "ast_hash": "cdadcf05dba5cf070db520fa0a6f1732",
-    "semantic_hash": "cdadcf05dba5cf070db520fa0a6f1732"
+    "mtime": 1795658089.9980237,
+    "seen": 1795659279.7877722,
+    "ast_hash": "1fb989cb9bd51dc885ad2e3ee96ee94d",
+    "semantic_hash": "1fb989cb9bd51dc885ad2e3ee96ee94d"
   },
   "app/src/test/java/com/example/commercialkiller/data/decision/LiteRtLmDecisionVerifierTest.kt": {
-    "mtime": 1795655437.5171742,
-    "seen": 1795655654.254653,
-    "ast_hash": "a9064c953f1af0f5a2cdc2dc8c64e6d5",
-    "semantic_hash": "a9064c953f1af0f5a2cdc2dc8c64e6d5"
+    "mtime": 1795656635.107943,
+    "seen": 1795659279.787773,
+    "ast_hash": "5c5241ad580fd3d8f4638f2bba9b1e0f",
+    "semantic_hash": "5c5241ad580fd3d8f4638f2bba9b1e0f"
   },
   "app/src/test/java/com/example/commercialkiller/data/decision/ProgramFingerprintCacheTest.kt": {
-    "mtime": 1795655437.5171742,
-    "seen": 1795655654.2546537,
-    "ast_hash": "b6a5cadca7ed826c1b1e292c892bafe6",
-    "semantic_hash": "b6a5cadca7ed826c1b1e292c892bafe6"
+    "mtime": 1795658087.9888012,
+    "seen": 1795659279.7877734,
+    "ast_hash": "0ce68a2fe9cf67243d70c30a8fcd1eec",
+    "semantic_hash": "0ce68a2fe9cf67243d70c30a8fcd1eec"
   },
   "app/src/test/java/com/example/commercialkiller/data/decision/SessionSegmentTrackerTest.kt": {
     "mtime": 1795655437.5176897,
@@ -276,10 +276,10 @@
     "semantic_hash": "7cfbee237d68a80ed51af061070d4dfe"
   },
   "app/src/test/java/com/example/commercialkiller/data/video/VideoFrameAnalyzerTest.kt": {
-    "mtime": 1795655437.5176897,
-    "seen": 1795655654.254655,
-    "ast_hash": "f15f729f9844efe608d3e2988e1f0a8e",
-    "semantic_hash": "f15f729f9844efe608d3e2988e1f0a8e"
+    "mtime": 1795658089.3076124,
+    "seen": 1795659279.787777,
+    "ast_hash": "06e93e4e154313f710ef76047d2d715c",
+    "semantic_hash": "06e93e4e154313f710ef76047d2d715c"
   },
   "app/src/test/java/com/example/commercialkiller/ui/main/MainScreenViewModelTest.kt": {
     "mtime": 1790074798.428685,
@@ -462,28 +462,28 @@
     "semantic_hash": "0e3f4a05d6038f574fb04cdcdb2b7a5c"
   },
   "JOURNAL.md": {
-    "mtime": 1795655437.5118296,
-    "seen": 1795655654.2546735,
-    "ast_hash": "e424742183cdca51a6ce5107b6cc36db",
-    "semantic_hash": "e424742183cdca51a6ce5107b6cc36db"
+    "mtime": 1795659309.778429,
+    "seen": 1795659324.1251142,
+    "ast_hash": "7ed77ad65a027158cf1c1b72694e25ad",
+    "semantic_hash": "7ed77ad65a027158cf1c1b72694e25ad"
   },
   "PLANNING.md": {
-    "mtime": 1795655437.5118296,
-    "seen": 1795655654.254674,
-    "ast_hash": "3e7be12ce4892b1b02de09e23db208f0",
-    "semantic_hash": "3e7be12ce4892b1b02de09e23db208f0"
+    "mtime": 1795659103.5817442,
+    "seen": 1795659279.7877824,
+    "ast_hash": "08b9b600f6fe8c7da604bba7be4d9d94",
+    "semantic_hash": "08b9b600f6fe8c7da604bba7be4d9d94"
   },
   "README.md": {
-    "mtime": 1795655437.5118296,
-    "seen": 1795655654.2546744,
-    "ast_hash": "a051257612d87793f93047d15106d4fb",
-    "semantic_hash": "a051257612d87793f93047d15106d4fb"
+    "mtime": 1795659108.3596015,
+    "seen": 1795659279.787783,
+    "ast_hash": "2f3d4f48456c140d2f31ae13934988a2",
+    "semantic_hash": "2f3d4f48456c140d2f31ae13934988a2"
   },
   "ROADMAP.md": {
-    "mtime": 1795655437.512373,
-    "seen": 1795655654.254675,
-    "ast_hash": "9c3634b33983e7abd566cf659b70d3e5",
-    "semantic_hash": "9c3634b33983e7abd566cf659b70d3e5"
+    "mtime": 1795659105.6531856,
+    "seen": 1795659279.7877836,
+    "ast_hash": "634dda49b7f183ab7328189290dfc9a9",
+    "semantic_hash": "634dda49b7f183ab7328189290dfc9a9"
   },
   "app/src/main/res/mipmap-hdpi/ic_launcher.webp": {
     "mtime": 1790074057.4696498,
@@ -544,5 +544,29 @@
     "seen": 1795655654.2546813,
     "ast_hash": "9ee591be72fb336861a8044086054daa",
     "semantic_hash": "9ee591be72fb336861a8044086054daa"
+  },
+  "app/src/main/java/com/example/commercialkiller/data/decision/BroadcastCueSignals.kt": {
+    "mtime": 1795656422.4381719,
+    "seen": 1795659279.787749,
+    "ast_hash": "fe51fc16751b0e71057772b117f79271",
+    "semantic_hash": "fe51fc16751b0e71057772b117f79271"
+  },
+  "app/src/main/java/com/example/commercialkiller/data/decision/RepeatAdFingerprintIndex.kt": {
+    "mtime": 1795657998.3260832,
+    "seen": 1795659279.7877522,
+    "ast_hash": "49b77a564c2feb8dd2863d51f8bce40e",
+    "semantic_hash": "49b77a564c2feb8dd2863d51f8bce40e"
+  },
+  "app/src/test/java/com/example/commercialkiller/data/decision/BroadcastClipEvaluationTest.kt": {
+    "mtime": 1795657004.9553614,
+    "seen": 1795659279.7877715,
+    "ast_hash": "b09d931b2e4bc25e81f7a76be2f26b92",
+    "semantic_hash": "b09d931b2e4bc25e81f7a76be2f26b92"
+  },
+  "app/src/test/java/com/example/commercialkiller/data/decision/RepeatAdFingerprintIndexTest.kt": {
+    "mtime": 1795658088.5512438,
+    "seen": 1795659279.7877743,
+    "ast_hash": "c306f0fd5e8ce2579f02d575f30c6cb5",
+    "semantic_hash": "c306f0fd5e8ce2579f02d575f30c6cb5"
   }
 }
