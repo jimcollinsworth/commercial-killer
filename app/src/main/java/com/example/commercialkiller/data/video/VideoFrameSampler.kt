@@ -80,7 +80,11 @@ object VideoFrameAnalyzer {
         timestampMs: Long,
         previous: VisualFrameDescriptor? = null
     ): VisualFrameDescriptor {
-        if (width <= 0 || height <= 0 || pixels.size < width * height) {
+        if (width <= 0 || height <= 0) {
+            return VisualFrameDescriptor(timestampMs = timestampMs)
+        }
+        val requiredPixels = width.toLong() * height.toLong()
+        if (requiredPixels > Int.MAX_VALUE.toLong() || pixels.size.toLong() < requiredPixels) {
             return VisualFrameDescriptor(timestampMs = timestampMs)
         }
 
@@ -445,9 +449,12 @@ object VideoFrameAnalyzer {
         if (a.size != b.size || a.isEmpty()) return 0f
         var sum = 0f
         for (i in a.indices) {
-            sum += abs(a[i] - b[i])
+            val va = if (a[i].isFinite()) a[i] else 0f
+            val vb = if (b[i].isFinite()) b[i] else 0f
+            sum += abs(va - vb)
         }
-        return ((sum / a.size.toFloat()) * 2.2f).coerceIn(0f, 1f)
+        val raw = (sum / a.size.toFloat()) * 2.2f
+        return if (raw.isFinite()) raw.coerceIn(0f, 1f) else 1f
     }
 
     private fun histogramL1Distance(a: FloatArray, b: FloatArray): Float {
@@ -457,10 +464,13 @@ object VideoFrameAnalyzer {
             val base = ch * 8
             var l1 = 0f
             for (bin in 0 until 8) {
-                l1 += abs(a[base + bin] - b[base + bin])
+                val va = if (a[base + bin].isFinite()) a[base + bin] else 0f
+                val vb = if (b[base + bin].isFinite()) b[base + bin] else 0f
+                l1 += abs(va - vb)
             }
-            channelSum += (0.5f * l1).coerceIn(0f, 1f)
+            channelSum += if (l1.isFinite()) (0.5f * l1).coerceIn(0f, 1f) else 1f
         }
-        return (channelSum / 3f).coerceIn(0f, 1f)
+        val raw = channelSum / 3f
+        return if (raw.isFinite()) raw.coerceIn(0f, 1f) else 1f
     }
 }

@@ -143,4 +143,21 @@ class RepeatAdFingerprintIndexTest {
         index.reset()
         assertEquals(0, index.windowCount())
     }
+
+    @Test
+    fun `non-finite melEnergies sanitize to zero-norm without collapsing cosine distance`() {
+        for (badVal in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
+            val index = RepeatAdFingerprintIndex()
+            val badMel = FloatArray(80) { badVal }
+            feedWindow(index, 0L, badMel, null, isTvMuted = false, isMedia = true, isProgramAnchor = false)
+            feedWindow(index, 1_000L, badMel, null, isTvMuted = false, isMedia = true, isProgramAnchor = false)
+            for (w in 2 until 11) {
+                feedWindow(index, w * 1_000L, adAudio(2), null, isTvMuted = false, isMedia = true, isProgramAnchor = false)
+            }
+            feedWindow(index, 11_000L, badMel, null, isTvMuted = false, isMedia = true, isProgramAnchor = false)
+            val result = index.peekMatch(12_200L, badMel, null, isTvMuted = false, isKnownProgramVisual = false)
+            assertEquals("Expected repeatAdDistance == 1f for $badVal", 1f, result.repeatAdDistance, 0.0001f)
+            assertEquals("Expected repeatAdMatchScore == 0f for $badVal", 0f, result.repeatAdMatchScore, 0.0001f)
+        }
+    }
 }

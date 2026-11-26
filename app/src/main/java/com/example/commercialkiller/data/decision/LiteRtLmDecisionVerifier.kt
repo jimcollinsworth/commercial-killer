@@ -139,7 +139,7 @@ class LiteRtLmDecisionVerifier(
                     features.blackSilencePulse >= 0.45f ||
                     features.logoDropoutScore >= 0.50f ||
                     features.aspectRatioShift >= 0.45f ||
-                    features.repeatAdDistance <= 0.25f
+                    (features.repeatAdDistance <= 0.25f && features.commercialScore >= 0.55f)
                 )
             val summary = when {
                 programReturn ->

@@ -887,4 +887,76 @@ class FrameDecisionEngineTest {
         val mutedShifted = engine.evaluateFrame(FloatArray(80) { 0.01f }, silenceTags(), 0f, 8_250L, shiftedSameBg.copy(timestampMs = 8_250L), isTvMuted = true)
         assertTrue("Expected aspectRatioShift to block false unmute (${mutedShifted.programReturnScore} < 0.80)", mutedShifted.programReturnScore < FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD)
     }
+
+    @Test
+    fun `evaluateFrame sanitizes NaN and Infinity across melEnergies shiftDistance and visualDescriptor`() {
+        val engine = FrameDecisionEngine()
+        val baseVisual = topLeftLogoDescriptor(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = 0L)
+
+        fun assertDecisionFiniteInUnitRange(d: FrameDecision) {
+            assertTrue(d.mediaScore.isFinite() && d.mediaScore in 0f..1f)
+            assertTrue(d.commercialScore.isFinite() && d.commercialScore in 0f..1f)
+            assertTrue(d.sceneSimilarity.isFinite() && d.sceneSimilarity in 0f..1f)
+            assertTrue(d.programReturnScore.isFinite() && d.programReturnScore in 0f..1f)
+            assertTrue(d.visualChangeScore.isFinite() && d.visualChangeScore in 0f..1f)
+            assertTrue(d.bestAngleSimilarity.isFinite() && d.bestAngleSimilarity in 0f..1f)
+            assertTrue(d.broadcastCues.logoMaskStrength.isFinite() && d.broadcastCues.logoMaskStrength in 0f..1f)
+            assertTrue(d.broadcastCues.logoDropoutScore.isFinite() && d.broadcastCues.logoDropoutScore in 0f..1f)
+            assertTrue(d.broadcastCues.blackSilencePulse.isFinite() && d.broadcastCues.blackSilencePulse in 0f..1f)
+            assertTrue(d.broadcastCues.aspectRatioShift.isFinite() && d.broadcastCues.aspectRatioShift in 0f..1f)
+            assertTrue(d.broadcastCues.repeatAdDistance.isFinite() && d.broadcastCues.repeatAdDistance in 0f..1f)
+            assertTrue(d.broadcastCues.repeatAdMatchScore.isFinite() && d.broadcastCues.repeatAdMatchScore in 0f..1f)
+        }
+
+        // Feed 12 frames with NaN/Infinity visual cue fields in AUDIO_VIDEO mode
+        for (i in 0 until 12) {
+            val t = i * 250L
+            val badVisual = baseVisual.copy(
+                timestampMs = t,
+                meanLuma = if (i % 2 == 0) Float.NaN else Float.POSITIVE_INFINITY,
+                visualChangeScore = if (i % 2 == 0) Float.POSITIVE_INFINITY else Float.NaN,
+                cornerEdgeMasks = FloatArray(16) { Float.NaN },
+                letterboxRatio = Float.NaN,
+                pillarboxRatio = Float.POSITIVE_INFINITY
+            )
+            val d = engine.evaluateFrame(
+                melEnergies = FloatArray(80) { if (it % 2 == 0) Float.NaN else Float.POSITIVE_INFINITY },
+                classifierTags = speechTags(),
+                shiftDistance = Float.POSITIVE_INFINITY,
+                timestampMs = t,
+                visualDescriptor = badVisual,
+                isTvMuted = false
+            )
+            assertDecisionFiniteInUnitRange(d)
+        }
+
+        // Also test mixed finite + Infinity mid-band Mel energies + NaN shiftDistance in AUDIO_ONLY
+        val mixedMel = FloatArray(80) { i -> if (i == 30) Float.POSITIVE_INFINITY else if (i == 31) Float.NaN else 0.5f }
+        val audioOnlyDecision = engine.evaluateFrame(
+            melEnergies = mixedMel,
+            classifierTags = speechTags(),
+            shiftDistance = Float.NaN,
+            timestampMs = 3_500L,
+            visualDescriptor = null,
+            isTvMuted = false
+        )
+        assertDecisionFiniteInUnitRange(audioOnlyDecision)
+
+        // Also test VIDEO_ONLY_MUTED with non-finite visualDescriptor fields
+        val mutedDecision = engine.evaluateFrame(
+            melEnergies = FloatArray(0),
+            classifierTags = emptyList(),
+            shiftDistance = Float.NaN,
+            timestampMs = 4_000L,
+            visualDescriptor = baseVisual.copy(
+                timestampMs = 4_000L,
+                visualChangeScore = Float.NaN,
+                cornerEdgeMasks = FloatArray(0),
+                letterboxRatio = Float.POSITIVE_INFINITY,
+                pillarboxRatio = Float.NaN
+            ),
+            isTvMuted = true
+        )
+        assertDecisionFiniteInUnitRange(mutedDecision)
+    }
 }

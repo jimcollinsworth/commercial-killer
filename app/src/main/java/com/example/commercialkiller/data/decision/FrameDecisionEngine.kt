@@ -166,8 +166,14 @@ class FrameDecisionEngine(
 
     fun getMediaThreshold(): Float = mediaThreshold
 
+    private fun sanitizeUnit(value: Float): Float =
+        if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+
+    private fun sanitizeNonNeg(value: Float): Float =
+        if (value.isFinite()) value.coerceAtLeast(0f) else 0f
+
     private fun clampSimilarityThreshold(value: Float): Float {
-        return if (value.isNaN()) {
+        return if (!value.isFinite()) {
             DEFAULT_SCENE_SIMILARITY_THRESHOLD
         } else {
             value.coerceIn(MIN_SCENE_SIMILARITY_THRESHOLD, MAX_SCENE_SIMILARITY_THRESHOLD)
@@ -175,7 +181,7 @@ class FrameDecisionEngine(
     }
 
     private fun clampMediaThreshold(value: Float): Float {
-        return if (value.isNaN()) {
+        return if (!value.isFinite()) {
             DEFAULT_MEDIA_THRESHOLD
         } else {
             value.coerceIn(MIN_MEDIA_THRESHOLD, MAX_MEDIA_THRESHOLD)
@@ -347,7 +353,7 @@ class FrameDecisionEngine(
                 cutCadencePerMin = lastCutCadencePerMin,
                 recommendedAction = recommendedAction,
                 decisionModality = DecisionModality.AUDIO_ONLY,
-                visualChangeScore = visualDescriptor?.visualChangeScore ?: 0f,
+                visualChangeScore = sanitizeUnit(visualDescriptor?.visualChangeScore ?: 0f),
                 isKnownSceneAngle = false,
                 programReturnScore = 0f,
                 visualCutCadencePerMin = 0f,
@@ -395,6 +401,7 @@ class FrameDecisionEngine(
         val bugIntact = !preMatch.hasStableBug || preMatch.bugSimilarity >= 0.75f
         val canLearnAngle = lastIsMedia && lastCommercialScore < 0.55f && bugIntact
 
+        val vChange = sanitizeUnit(activeVisual.visualChangeScore)
         val isNewVisualSample = activeVisual.timestampMs != lastVisualTimestampMs
         if (isNewVisualSample) {
             lastVisualTimestampMs = activeVisual.timestampMs
@@ -407,7 +414,6 @@ class FrameDecisionEngine(
             )
             lastAngleObservation = obs
 
-            val vChange = activeVisual.visualChangeScore.coerceIn(0f, 1f)
             if (!obs.isKnownAngle && !activeVisual.isBlackFrame && vChange >= VISUAL_NOVEL_CUT_THRESHOLD) {
                 novelVisualCutTimestampsMs.addLast(activeVisual.timestampMs)
             }
@@ -415,11 +421,11 @@ class FrameDecisionEngine(
         pruneNovelVisualCuts(timestampMs)
 
         val visualSim = if (lastAngleObservation.isKnownAngle) {
-            maxOf(lastAngleObservation.bestAngleSimilarity, 1f - activeVisual.visualChangeScore.coerceIn(0f, 1f))
+            maxOf(sanitizeUnit(lastAngleObservation.bestAngleSimilarity), 1f - vChange)
         } else {
-            (1f - activeVisual.visualChangeScore).coerceIn(0f, 1f)
+            sanitizeUnit(1f - vChange)
         }
-        lastSceneSimilarity = (0.55f * audioSim + 0.45f * visualSim).coerceIn(0f, 1f)
+        lastSceneSimilarity = sanitizeUnit(0.55f * audioSim + 0.45f * visualSim)
         lastIsSameScene = if (lastAngleObservation.isKnownAngle &&
             lastAngleObservation.bestAngleSimilarity >= ProgramFingerprintCache.KNOWN_ANGLE_SIMILARITY_THRESHOLD
         ) {
@@ -514,12 +520,12 @@ class FrameDecisionEngine(
             cutCadencePerMin = lastCutCadencePerMin,
             recommendedAction = recommendedAction,
             decisionModality = DecisionModality.AUDIO_VIDEO,
-            visualChangeScore = activeVisual.visualChangeScore,
+            visualChangeScore = vChange,
             isKnownSceneAngle = lastAngleObservation.isKnownAngle,
             programReturnScore = 0f,
             visualCutCadencePerMin = visualCutsPerMin,
             isProgramAnchorFrozen = programCache.isFrozen(),
-            bestAngleSimilarity = lastAngleObservation.bestAngleSimilarity,
+            bestAngleSimilarity = sanitizeUnit(lastAngleObservation.bestAngleSimilarity),
             broadcastCues = cues
         )
     }
@@ -564,8 +570,8 @@ class FrameDecisionEngine(
             )
         }
 
-        val vChange = visualDescriptor.visualChangeScore.coerceIn(0f, 1f)
-        val vSim = (1f - vChange).coerceIn(0f, 1f)
+        val vChange = sanitizeUnit(visualDescriptor.visualChangeScore)
+        val vSim = sanitizeUnit(1f - vChange)
         lastSceneSimilarity = vSim
         lastIsSameScene = vSim >= sceneSimilarityThreshold
 
@@ -583,20 +589,20 @@ class FrameDecisionEngine(
         val returnScore = if (!match.isBaselineReady || visualDescriptor.isBlackFrame) {
             0f
         } else {
-            val sProto = match.prototypeSimilarity.coerceIn(0f, 1f)
-            val sBug = match.bugSimilarity.coerceIn(0f, 1f)
+            val sProto = sanitizeUnit(match.prototypeSimilarity)
+            val sBug = sanitizeUnit(match.bugSimilarity)
             val sCadence = if (recentCuts15s <= 1 || sProto >= 0.80f) {
                 1.0f
             } else {
-                (1.0f - ((recentCuts15s - 1) / 4f)).coerceIn(0f, 1f)
+                sanitizeUnit(1.0f - ((recentCuts15s - 1) / 4f))
             }
             val gatedCadence = if (sProto >= 0.70f) sCadence else 0f
             val baseReturn = if (match.hasStableBug) {
-                (0.45f * sProto + 0.35f * sBug + 0.20f * gatedCadence).coerceIn(0f, 1f)
+                sanitizeUnit(0.45f * sProto + 0.35f * sBug + 0.20f * gatedCadence)
             } else {
-                (0.80f * sProto + 0.20f * gatedCadence).coerceIn(0f, 1f)
+                sanitizeUnit(0.80f * sProto + 0.20f * gatedCadence)
             }
-            (baseReturn - 0.25f * match.aspectRatioShift - 0.25f * repeatResult.repeatAdMatchScore).coerceIn(0f, 1f)
+            sanitizeUnit(baseReturn - 0.25f * sanitizeUnit(match.aspectRatioShift) - 0.25f * sanitizeUnit(repeatResult.repeatAdMatchScore))
         }
 
         if (isNewVisual) {
@@ -644,7 +650,7 @@ class FrameDecisionEngine(
             programReturnScore = returnScore,
             visualCutCadencePerMin = visualCutsPerMin,
             isProgramAnchorFrozen = programCache.isFrozen(),
-            bestAngleSimilarity = match.prototypeSimilarity,
+            bestAngleSimilarity = sanitizeUnit(match.prototypeSimilarity),
             broadcastCues = BroadcastCueSignals(
                 logoMaskStrength = match.logoMaskStrength,
                 logoDropoutScore = match.logoDropoutScore,
@@ -662,7 +668,8 @@ class FrameDecisionEngine(
         activeVisual: VisualFrameDescriptor,
         timestampMs: Long
     ): Float {
-        val darkness = ((DARKNESS_LUMA_THRESHOLD - activeVisual.meanLuma) / DARKNESS_LUMA_THRESHOLD).coerceIn(0f, 1f)
+        val safeLuma = sanitizeUnit(activeVisual.meanLuma)
+        val darkness = sanitizeUnit((DARKNESS_LUMA_THRESHOLD - safeLuma) / DARKNESS_LUMA_THRESHOLD)
         if (darkness >= MIN_CUE_TRIGGER) {
             lastDarknessScore = darkness
             lastDarkFrameMs = activeVisual.timestampMs
@@ -670,11 +677,12 @@ class FrameDecisionEngine(
 
         var meanMelEnergy = 0f
         if (melEnergies.isNotEmpty()) {
-            var sum = 0f
+            var sum = 0.0
             for (i in melEnergies.indices) {
-                sum += melEnergies[i].coerceAtLeast(0f)
+                sum += sanitizeNonNeg(melEnergies[i])
             }
-            meanMelEnergy = sum / melEnergies.size.toFloat()
+            val avg = (sum / melEnergies.size.toDouble()).toFloat()
+            meanMelEnergy = if (avg.isFinite()) avg else Float.MAX_VALUE
         }
         var maxSilenceTag = 0f
         for (i in classifierTags.indices) {
@@ -682,13 +690,13 @@ class FrameDecisionEngine(
             if (tag.label.contains("silence", ignoreCase = true) ||
                 tag.label.contains("quiet", ignoreCase = true)
             ) {
-                val s = tag.score.coerceIn(0f, 1f)
+                val s = sanitizeUnit(tag.score)
                 if (s > maxSilenceTag) maxSilenceTag = s
             }
         }
         val audioDip = maxOf(
             maxSilenceTag,
-            ((AUDIO_SILENCE_ENERGY_FLOOR - meanMelEnergy) / AUDIO_SILENCE_ENERGY_FLOOR).coerceIn(0f, 1f)
+            sanitizeUnit((AUDIO_SILENCE_ENERGY_FLOOR - meanMelEnergy) / AUDIO_SILENCE_ENERGY_FLOOR)
         )
         if (audioDip >= MIN_CUE_TRIGGER) {
             lastAudioSilenceScore = audioDip
@@ -704,7 +712,7 @@ class FrameDecisionEngine(
 
         val currentDecayed = if (coOccurrencePeakMs != Long.MIN_VALUE) {
             val elapsed = (timestampMs - coOccurrencePeakMs).coerceAtLeast(0L)
-            (coOccurrencePeak * (1f - elapsed.toFloat() / BLACK_SILENCE_PULSE_HOLD_MS.toFloat())).coerceIn(0f, 1f)
+            sanitizeUnit(coOccurrencePeak * (1f - elapsed.toFloat() / BLACK_SILENCE_PULSE_HOLD_MS.toFloat()))
         } else {
             0f
         }
@@ -721,8 +729,7 @@ class FrameDecisionEngine(
         ) {
             val gap = abs(lastDarkFrameMs - lastAudioSilenceMs)
             if (gap <= BLACK_SILENCE_CO_OCCURRENCE_WINDOW_MS) {
-                val rawPulse = (lastDarknessScore * lastAudioSilenceScore * (1f - gap.toFloat() / 1_200f))
-                    .coerceIn(0f, 1f)
+                val rawPulse = sanitizeUnit(lastDarknessScore * lastAudioSilenceScore * (1f - gap.toFloat() / 1_200f))
                 if (rawPulse > currentDecayed) {
                     coOccurrencePeak = rawPulse
                     coOccurrencePeakMs = timestampMs
@@ -742,17 +749,20 @@ class FrameDecisionEngine(
         cues: BroadcastCueSignals,
         visualCutsPerMin: Float
     ): Float {
-        val novelCadenceBoost = if (visualCutsPerMin >= 8f) 0.15f else 0f
-        val cueComposite = (
-            0.35f * cues.logoDropoutScore +
-                0.25f * cues.blackSilencePulse +
-                0.20f * cues.aspectRatioShift +
-                0.20f * cues.repeatAdMatchScore
-            ).coerceIn(0f, 1f)
+        val safeAudioScore = sanitizeUnit(audioScore)
+        val novelCadenceBoost = if (visualCutsPerMin.isFinite() && visualCutsPerMin >= 8f) 0.15f else 0f
+        val cueComposite = sanitizeUnit(
+            0.35f * sanitizeUnit(cues.logoDropoutScore) +
+                0.25f * sanitizeUnit(cues.blackSilencePulse) +
+                0.20f * sanitizeUnit(cues.aspectRatioShift) +
+                0.20f * sanitizeUnit(cues.repeatAdMatchScore)
+        )
 
         if (!match.isBaselineReady) {
-            return (audioScore + 0.22f * cues.blackSilencePulse + 0.20f * cues.repeatAdMatchScore + novelCadenceBoost)
-                .coerceIn(0f, 1f)
+            return sanitizeUnit(
+                safeAudioScore + 0.22f * sanitizeUnit(cues.blackSilencePulse) +
+                    0.20f * sanitizeUnit(cues.repeatAdMatchScore) + novelCadenceBoost
+            )
         }
 
         val bugIntact = !match.hasStableBug || match.bugSimilarity >= 0.78f
@@ -765,15 +775,17 @@ class FrameDecisionEngine(
             bugIntact &&
             cuesCalm
         ) {
-            return (audioScore - 0.18f).coerceIn(0f, 1f)
+            return sanitizeUnit(safeAudioScore - 0.18f)
         }
 
-        val protoDivergence = (1f - match.prototypeSimilarity).coerceIn(0f, 1f)
-        val visualBreakScore = (protoDivergence * 0.45f + cueComposite * 0.40f + novelCadenceBoost).coerceIn(0f, 1f)
-        return maxOf(
-            audioScore * 0.85f,
-            audioScore * 0.70f + visualBreakScore * 0.55f
-        ).coerceIn(0f, 1f)
+        val protoDivergence = sanitizeUnit(1f - sanitizeUnit(match.prototypeSimilarity))
+        val visualBreakScore = sanitizeUnit(protoDivergence * 0.45f + cueComposite * 0.40f + novelCadenceBoost)
+        return sanitizeUnit(
+            maxOf(
+                safeAudioScore * 0.85f,
+                safeAudioScore * 0.70f + visualBreakScore * 0.55f
+            )
+        )
     }
 
     private fun pruneNovelVisualCuts(timestampMs: Long) {
@@ -873,7 +885,7 @@ class FrameDecisionEngine(
 
         for (i in classifierTags.indices) {
             val tag = classifierTags[i]
-            val score = tag.score.coerceIn(0f, 1f)
+            val score = sanitizeUnit(tag.score)
             val label = tag.label
 
             if (label.contains("speech", ignoreCase = true) ||
@@ -952,7 +964,7 @@ class FrameDecisionEngine(
         var midMax = 0f
 
         for (i in 0 until bandCount) {
-            val e = features[i].coerceAtLeast(0f)
+            val e = sanitizeNonNeg(features[i])
             totalEnergy += e
             if (i < lowEnd) {
                 lowSum += e
@@ -965,11 +977,13 @@ class FrameDecisionEngine(
         }
 
         val meanEnergy = (totalEnergy / bandCount.toDouble()).toFloat()
-        if (meanEnergy < 0.08f || maxSilenceTag >= 0.70f) {
+        if (!meanEnergy.isFinite() || meanEnergy < 0.08f || maxSilenceTag >= 0.70f) {
             lastMediaScore = if (maxSilenceTag >= 0.70f) {
                 (1f - maxSilenceTag).coerceIn(0f, 0.20f)
+            } else if (!meanEnergy.isFinite()) {
+                0f
             } else {
-                (meanEnergy / 0.08f * 0.25f).coerceIn(0f, 0.25f)
+                sanitizeUnit(meanEnergy / 0.08f * 0.25f).coerceAtMost(0.25f)
             }
             lastIsMedia = false
             lastMediaEnvironment = MediaEnvironment.SILENCE
@@ -979,25 +993,32 @@ class FrameDecisionEngine(
         val lowMean = (lowSum / lowEnd.coerceAtLeast(1).toDouble()).toFloat()
         val midLen = (midEnd - midStart).coerceAtLeast(1)
         val midMean = (midSum / midLen.toDouble()).toFloat()
-        val safeMidMin = if (midMin == Float.MAX_VALUE) 0f else midMin
-        val midContrast = if (midMax > 1e-4f) ((midMax - safeMidMin) / (midMax + 1e-4f)).coerceIn(0f, 1f) else 0f
+        val safeMidMin = if (midMin == Float.MAX_VALUE || !midMin.isFinite()) 0f else midMin
+        val safeMidMax = if (midMax.isFinite()) midMax else 0f
+        val midContrast = if (safeMidMax > 1e-4f) {
+            sanitizeUnit((safeMidMax - safeMidMin) / (safeMidMax + 1e-4f))
+        } else {
+            0f
+        }
 
-        val lowDominanceRatio = lowMean / (midMean + 1e-4f)
-        val rumblePenalty = if (lowDominanceRatio > 2.2f) {
-            ((lowDominanceRatio - 2.2f) / 2.0f).coerceIn(0f, 1f) * 0.45f
+        val safeLowMean = if (lowMean.isFinite()) lowMean else 0f
+        val safeMidMean = if (midMean.isFinite()) midMean else 0f
+        val lowDominanceRatio = safeLowMean / (safeMidMean + 1e-4f)
+        val rumblePenalty = if (lowDominanceRatio.isFinite() && lowDominanceRatio > 2.2f) {
+            sanitizeUnit((lowDominanceRatio - 2.2f) / 2.0f) * 0.45f
         } else {
             0f
         }
         val flatNoisePenalty = if (maxMediaTag < 0.40f && midContrast < 0.25f) 0.30f else 0f
 
         val rawMediaScore = (maxMediaTag * 0.55f) +
-            ((midMean / 0.35f).coerceIn(0f, 1f) * 0.30f) +
-            ((midContrast / 0.60f).coerceIn(0f, 1f) * 0.25f) -
+            (sanitizeUnit(safeMidMean / 0.35f) * 0.30f) +
+            (sanitizeUnit(midContrast / 0.60f) * 0.25f) -
             (maxNonMediaTag * 0.55f) -
             rumblePenalty -
             flatNoisePenalty
 
-        lastMediaScore = rawMediaScore.coerceIn(0f, 1f)
+        lastMediaScore = sanitizeUnit(rawMediaScore)
         lastIsMedia = lastMediaScore >= mediaThreshold
         lastMediaEnvironment = if (lastIsMedia) {
             MediaEnvironment.BROADCAST_MEDIA
@@ -1024,23 +1045,24 @@ class FrameDecisionEngine(
             var normCurrSq = 0.0
             var normPrevSq = 0.0
             for (i in 0 until bandCount) {
-                val curr = currentFeatures[i].toDouble()
-                val prev = previousFrameBuffer[i].toDouble()
+                val curr = sanitizeNonNeg(currentFeatures[i]).toDouble()
+                val prev = sanitizeNonNeg(previousFrameBuffer[i]).toDouble()
                 dot += curr * prev
                 normCurrSq += curr * curr
                 normPrevSq += prev * prev
             }
 
-            if (normCurrSq == 0.0 || normPrevSq == 0.0) {
+            if (normCurrSq == 0.0 || normPrevSq == 0.0 || !normCurrSq.isFinite() || !normPrevSq.isFinite()) {
                 similarity = 1.0f
                 isSameScene = true
             } else {
                 val denom = sqrt(normCurrSq) * sqrt(normPrevSq)
-                if (denom == 0.0) {
+                if (denom == 0.0 || !denom.isFinite()) {
                     similarity = 1.0f
                     isSameScene = true
                 } else {
-                    similarity = (dot / denom).toFloat().coerceIn(-1.0f, 1.0f)
+                    val rawSim = (dot / denom).toFloat()
+                    similarity = if (rawSim.isFinite()) rawSim.coerceIn(0.0f, 1.0f) else 1.0f
                     isSameScene = similarity >= sceneSimilarityThreshold
                 }
             }
@@ -1060,7 +1082,9 @@ class FrameDecisionEngine(
             if (previousFrameBuffer.size < bandCount) {
                 previousFrameBuffer = FloatArray(bandCount)
             }
-            System.arraycopy(currentFeatures, 0, previousFrameBuffer, 0, bandCount)
+            for (i in 0 until bandCount) {
+                previousFrameBuffer[i] = sanitizeNonNeg(currentFeatures[i])
+            }
             previousFrameLength = bandCount
         } else {
             previousFrameLength = 0
@@ -1088,7 +1112,7 @@ class FrameDecisionEngine(
 
         for (i in classifierTags.indices) {
             val tag = classifierTags[i]
-            val score = tag.score.coerceIn(0f, 1f)
+            val score = sanitizeUnit(tag.score)
             val label = tag.label
 
             if (label.contains("commercial", ignoreCase = true) ||
@@ -1136,7 +1160,7 @@ class FrameDecisionEngine(
             var sum = 0.0
             var filledBands = 0
             for (i in features.indices) {
-                val energy = features[i].coerceAtLeast(0f)
+                val energy = sanitizeNonNeg(features[i])
                 sum += energy
                 if (energy >= 0.25f) {
                     filledBands++
@@ -1145,39 +1169,42 @@ class FrameDecisionEngine(
             val n = features.size.toDouble()
             val mean = (sum / n).toFloat()
 
-            if (mean > 0.05f) {
+            if (mean.isFinite() && mean > 0.05f) {
                 var sqDiffSum = 0.0
                 for (i in features.indices) {
-                    val energy = features[i].coerceAtLeast(0f)
+                    val energy = sanitizeNonNeg(features[i])
                     val diff = energy - mean
                     sqDiffSum += diff * diff
                 }
                 val stdDev = sqrt(sqDiffSum / n).toFloat()
-                val coeffOfVariation = stdDev / mean
+                val coeffOfVariation = if (stdDev.isFinite()) stdDev / mean else 1.2f
 
-                val loudnessFactor = (mean / 0.65f).coerceIn(0f, 1f)
+                val loudnessFactor = sanitizeUnit(mean / 0.65f)
                 val fillRatio = filledBands.toFloat() / features.size.toFloat()
-                val uniformityFactor = if (mean > 0.15f) {
-                    (1.0f - (coeffOfVariation / 1.2f)).coerceIn(0f, 1f)
+                val uniformityFactor = if (mean > 0.15f && coeffOfVariation.isFinite()) {
+                    sanitizeUnit(1.0f - (coeffOfVariation / 1.2f))
                 } else {
                     0f
                 }
-                val energyGate = (mean / 0.30f).coerceIn(0f, 1f)
-                compressionDensity = (0.45f * loudnessFactor + 0.30f * fillRatio + 0.25f * uniformityFactor) * energyGate
+                val energyGate = sanitizeUnit(mean / 0.30f)
+                compressionDensity = sanitizeUnit(
+                    (0.45f * loudnessFactor + 0.30f * fillRatio + 0.25f * uniformityFactor) * energyGate
+                )
             }
         }
 
-        val safeShiftDistance = if (shiftDistance.isNaN()) 0f else shiftDistance.coerceAtLeast(0f)
-        val shiftBoost = (safeShiftDistance / 0.50f).coerceIn(0f, 1f) * 0.15f
+        val safeShiftDistance = sanitizeNonNeg(shiftDistance)
+        val shiftBoost = sanitizeUnit(safeShiftDistance / 0.50f) * 0.15f
 
         // (c) Rolling cut cadence boost at >= 15 cuts/min.
-        val cadenceBoost = if (cutCadencePerMin >= HIGH_CADENCE_CUTS_PER_MIN) {
-            0.15f + ((cutCadencePerMin - HIGH_CADENCE_CUTS_PER_MIN) / 30f).coerceIn(0f, 1f) * 0.10f
+        val safeCadence = sanitizeNonNeg(cutCadencePerMin)
+        val cadenceBoost = if (safeCadence >= HIGH_CADENCE_CUTS_PER_MIN) {
+            0.15f + sanitizeUnit((safeCadence - HIGH_CADENCE_CUTS_PER_MIN) / 30f) * 0.10f
         } else {
             0f
         }
 
-        val repeatBoost = 0.14f * repeatAdMatchScore.coerceIn(0f, 1f)
+        val repeatBoost = 0.14f * sanitizeUnit(repeatAdMatchScore)
 
         val rawScore = (positiveTagScore * 0.58f) +
             (compressionDensity * 0.40f) +
@@ -1187,8 +1214,9 @@ class FrameDecisionEngine(
             speechPenalty -
             silencePenalty
 
-        val clampedScore = rawScore.coerceIn(0.0f, 1.0f)
+        val clampedScore = sanitizeUnit(rawScore)
+        val safeThreshold = if (commercialThreshold.isFinite()) commercialThreshold else DEFAULT_COMMERCIAL_THRESHOLD
         lastCommercialScore = clampedScore
-        lastIsCommercial = clampedScore >= commercialThreshold
+        lastIsCommercial = clampedScore >= safeThreshold
     }
 }

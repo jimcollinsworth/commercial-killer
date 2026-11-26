@@ -192,4 +192,29 @@ class VideoFrameAnalyzerTest {
         assertEquals(0f, blackDesc.letterboxRatio, 0.001f)
         assertEquals(0f, blackDesc.pillarboxRatio, 0.001f)
     }
+
+    @Test
+    fun `computeDescriptorFromArgbPixels guards against 32-bit Int dimension overflow`() {
+        val overflowDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(
+            pixels = IntArray(0),
+            width = 65536,
+            height = 65536,
+            timestampMs = 100L,
+            previous = null
+        )
+        assertEquals(100L, overflowDesc.timestampMs)
+        assertEquals(0f, overflowDesc.meanLuma, 0.0001f)
+        assertEquals(0f, overflowDesc.letterboxRatio, 0.0001f)
+        assertEquals(0f, overflowDesc.pillarboxRatio, 0.0001f)
+
+        val negDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(
+            pixels = IntArray(0),
+            width = -1,
+            height = 36,
+            timestampMs = 200L,
+            previous = null
+        )
+        assertEquals(200L, negDesc.timestampMs)
+        assertEquals(0f, negDesc.meanLuma, 0.0001f)
+    }
 }

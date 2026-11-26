@@ -187,11 +187,11 @@ class RepeatAdFingerprintIndex {
             val hist = visualDescriptor.colorHistogram
             val lumaLimit = minOf(LUMA_CELLS, luma.size)
             for (i in 0 until lumaLimit) {
-                accLuma[i] += luma[i]
+                accLuma[i] += sanitizeUnit(luma[i])
             }
             val histLimit = minOf(HIST_BINS, hist.size)
             for (i in 0 until histLimit) {
-                accHist[i] += hist[i]
+                accHist[i] += sanitizeUnit(hist[i])
             }
             accVisualCount++
         }
@@ -280,9 +280,9 @@ class RepeatAdFingerprintIndex {
             }
             if (visualDescriptor != null) {
                 val lumaLimit = minOf(LUMA_CELLS, visualDescriptor.lumaGrid.size)
-                for (i in 0 until lumaLimit) avgLuma[i] += visualDescriptor.lumaGrid[i]
+                for (i in 0 until lumaLimit) avgLuma[i] += sanitizeUnit(visualDescriptor.lumaGrid[i])
                 val histLimit = minOf(HIST_BINS, visualDescriptor.colorHistogram.size)
-                for (i in 0 until histLimit) avgHist[i] += visualDescriptor.colorHistogram[i]
+                for (i in 0 until histLimit) avgHist[i] += sanitizeUnit(visualDescriptor.colorHistogram[i])
             }
             val denom = totalVisCount.toFloat()
             for (i in 0 until LUMA_CELLS) avgLuma[i] /= denom
@@ -322,24 +322,31 @@ class RepeatAdFingerprintIndex {
         }
     }
 
+    private fun sanitizeUnit(value: Float): Float =
+        if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+
     private fun melCosineDistance(a: FloatArray, b: FloatArray): Float {
         var dot = 0.0
         var normA = 0.0
         var normB = 0.0
         val limit = minOf(a.size, b.size)
         for (i in 0 until limit) {
-            val va = a[i].toDouble()
-            val vb = b[i].toDouble()
+            val va = if (a[i].isFinite()) a[i].toDouble() else 0.0
+            val vb = if (b[i].isFinite()) b[i].toDouble() else 0.0
             dot += va * vb
             normA += va * va
             normB += vb * vb
         }
-        if (normA <= 1e-6 || normB <= 1e-6) {
+        if (normA <= 1e-6 || normB <= 1e-6 || !normA.isFinite() || !normB.isFinite()) {
             return 1f
         }
         val denom = sqrt(normA) * sqrt(normB)
+        if (denom <= 1e-6 || !denom.isFinite()) {
+            return 1f
+        }
         val cosSim = (dot / denom).coerceIn(-1.0, 1.0)
-        return (1.0 - cosSim).toFloat().coerceIn(0f, 1f)
+        val dist = (1.0 - cosSim).toFloat()
+        return if (dist.isFinite()) dist.coerceIn(0f, 1f) else 1f
     }
 
     private fun downsampleMel16(melEnergies: FloatArray): FloatArray {
@@ -351,9 +358,10 @@ class RepeatAdFingerprintIndex {
             val end = (((b + 1) * srcLen) / MEL_BANDS).coerceAtLeast(start + 1).coerceAtMost(srcLen)
             var sum = 0f
             for (i in start until end) {
-                sum += melEnergies[i].coerceIn(0f, 1f)
+                sum += sanitizeUnit(melEnergies[i])
             }
-            out[b] = (sum / (end - start).coerceAtLeast(1)).coerceIn(0f, 1f)
+            val avg = sum / (end - start).coerceAtLeast(1)
+            out[b] = sanitizeUnit(avg)
         }
         return out
     }

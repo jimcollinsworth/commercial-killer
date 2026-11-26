@@ -277,4 +277,91 @@ class ProgramFingerprintCacheTest {
         assertEquals(0f, afterClear.logoMaskStrength, 0.001f)
         assertEquals(0f, afterClear.aspectRatioShift, 0.001f)
     }
+
+    @Test
+    fun `freezeForBreak and scoreAgainstProgram handle short cornerEdgeMasks and non-finite inputs safely`() {
+        for (len in listOf(0, 16)) {
+            val cache = ProgramFingerprintCache()
+            for (i in 0 until 10) {
+                val base = frameWithTopLeftLogoAndAspect(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = i * 250L)
+                cache.observeProgramFrame(base.copy(cornerEdgeMasks = FloatArray(len) { if (it < 4) 0.5f else 0f }))
+            }
+            cache.freezeForBreak(muteTimestampMs = 10_000L)
+            assertTrue(cache.isFrozen())
+            val res = cache.scoreAgainstProgram(
+                frameWithTopLeftLogoAndAspect(0xFF224466.toInt(), withTopLeftLogo = false, timestampMs = 12_000L)
+                    .copy(cornerEdgeMasks = FloatArray(len))
+            )
+            assertTrue(res.prototypeSimilarity.isFinite() && res.prototypeSimilarity in 0f..1f)
+            assertTrue(res.bugSimilarity.isFinite() && res.bugSimilarity in 0f..1f)
+            assertTrue(res.logoMaskStrength.isFinite() && res.logoMaskStrength in 0f..1f)
+            assertTrue(res.logoDropoutScore.isFinite() && res.logoDropoutScore in 0f..1f)
+            assertTrue(res.aspectRatioShift.isFinite() && res.aspectRatioShift in 0f..1f)
+        }
+
+        val nonFiniteCache = ProgramFingerprintCache()
+        for (i in 0 until 10) {
+            val base = frameWithTopLeftLogoAndAspect(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = i * 250L)
+            val badMasks = FloatArray(64) { if (it % 2 == 0) Float.NaN else Float.POSITIVE_INFINITY }
+            nonFiniteCache.observeProgramFrame(
+                base.copy(
+                    cornerEdgeMasks = badMasks,
+                    letterboxRatio = Float.NaN,
+                    pillarboxRatio = Float.POSITIVE_INFINITY
+                )
+            )
+        }
+        val liveMatch = nonFiniteCache.scoreAgainstProgram(
+            frameWithTopLeftLogoAndAspect(0xFF335577.toInt(), withTopLeftLogo = false, timestampMs = 3_000L)
+                .copy(
+                    cornerEdgeMasks = FloatArray(64) { Float.NaN },
+                    letterboxRatio = Float.POSITIVE_INFINITY,
+                    pillarboxRatio = Float.NaN
+                )
+        )
+        assertTrue(liveMatch.prototypeSimilarity.isFinite() && liveMatch.prototypeSimilarity in 0f..1f)
+        assertTrue(liveMatch.bugSimilarity.isFinite() && liveMatch.bugSimilarity in 0f..1f)
+        assertTrue(liveMatch.logoMaskStrength.isFinite() && liveMatch.logoMaskStrength in 0f..1f)
+        assertTrue(liveMatch.logoDropoutScore.isFinite() && liveMatch.logoDropoutScore in 0f..1f)
+        assertTrue(liveMatch.aspectRatioShift.isFinite() && liveMatch.aspectRatioShift in 0f..1f)
+
+        nonFiniteCache.freezeForBreak(muteTimestampMs = 10_000L)
+        val frozenMatch = nonFiniteCache.scoreAgainstProgram(
+            frameWithTopLeftLogoAndAspect(0xFF335577.toInt(), withTopLeftLogo = false, timestampMs = 12_000L)
+                .copy(
+                    cornerEdgeMasks = FloatArray(64) { Float.POSITIVE_INFINITY },
+                    letterboxRatio = Float.NaN,
+                    pillarboxRatio = Float.POSITIVE_INFINITY
+                )
+        )
+        assertTrue(frozenMatch.prototypeSimilarity.isFinite() && frozenMatch.prototypeSimilarity in 0f..1f)
+        assertTrue(frozenMatch.bugSimilarity.isFinite() && frozenMatch.bugSimilarity in 0f..1f)
+        assertTrue(frozenMatch.logoMaskStrength.isFinite() && frozenMatch.logoMaskStrength in 0f..1f)
+        assertTrue(frozenMatch.logoDropoutScore.isFinite() && frozenMatch.logoDropoutScore in 0f..1f)
+        assertTrue(frozenMatch.aspectRatioShift.isFinite() && frozenMatch.aspectRatioShift in 0f..1f)
+    }
+
+    @Test
+    fun `freezeForBreak re-seeds live aspect and edge EMAs from rolled-back baseline`() {
+        val cache = ProgramFingerprintCache()
+        for (i in 0 until 12) {
+            cache.observeProgramFrame(
+                frameWithTopLeftLogoAndAspect(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = i * 250L)
+            )
+        }
+        // Inject break-entry pillarbox frames inside the 2s rollback window
+        for (i in 0 until 7) {
+            cache.observeProgramFrame(
+                frameWithTopLeftLogoAndAspect(0xFFCC4422.toInt(), withTopLeftLogo = false, pillarboxCols = 8, timestampMs = 3_000L + i * 250L)
+            )
+        }
+        cache.freezeForBreak(muteTimestampMs = 4_750L)
+        cache.unfreeze()
+
+        val cleanAfterUnfreeze = cache.scoreAgainstProgram(
+            frameWithTopLeftLogoAndAspect(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = 11_000L)
+        )
+        assertEquals(0f, cleanAfterUnfreeze.aspectRatioShift, 0.001f)
+        assertTrue(cleanAfterUnfreeze.logoMaskStrength >= 0.35f)
+    }
 }

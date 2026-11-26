@@ -173,7 +173,7 @@ class ProgramFingerprintCache {
         if (liveEdgeFrameCount == 0) {
             val limit = min(EDGE_MASK_TOTAL, edges.size)
             for (i in 0 until limit) {
-                liveCornerEdgeEma[i] = edges[i]
+                liveCornerEdgeEma[i] = sanitizeUnit(edges[i])
             }
             for (i in limit until EDGE_MASK_TOTAL) {
                 liveCornerEdgeEma[i] = 0f
@@ -181,7 +181,7 @@ class ProgramFingerprintCache {
             liveCornerEdgeVar.fill(0f)
         } else {
             for (i in 0 until EDGE_MASK_TOTAL) {
-                val v = if (i < edges.size) edges[i] else 0f
+                val v = if (i < edges.size) sanitizeUnit(edges[i]) else 0f
                 val diff = v - liveCornerEdgeEma[i]
                 liveCornerEdgeEma[i] += EDGE_EMA_ALPHA * diff
                 liveCornerEdgeVar[i] = (1f - EDGE_EMA_ALPHA) * liveCornerEdgeVar[i] + EDGE_EMA_ALPHA * diff * diff
@@ -192,12 +192,14 @@ class ProgramFingerprintCache {
             liveCornerStrength = computeCornerEdgeStrengths(liveCornerEdgeEma, liveCornerEdgeVar)
         }
 
+        val lb = sanitizeUnit(descriptor.letterboxRatio)
+        val pb = sanitizeUnit(descriptor.pillarboxRatio)
         if (liveAspectCount == 0) {
-            liveLetterboxEma = descriptor.letterboxRatio
-            livePillarboxEma = descriptor.pillarboxRatio
+            liveLetterboxEma = lb
+            livePillarboxEma = pb
         } else {
-            liveLetterboxEma += ASPECT_EMA_ALPHA * (descriptor.letterboxRatio - liveLetterboxEma)
-            livePillarboxEma += ASPECT_EMA_ALPHA * (descriptor.pillarboxRatio - livePillarboxEma)
+            liveLetterboxEma += ASPECT_EMA_ALPHA * (lb - liveLetterboxEma)
+            livePillarboxEma += ASPECT_EMA_ALPHA * (pb - livePillarboxEma)
         }
         liveAspectCount++
 
@@ -270,7 +272,7 @@ class ProgramFingerprintCache {
             val edges = baseline[i].cornerEdgeMasks
             val limit = min(EDGE_MASK_TOTAL, edges.size)
             for (k in 0 until limit) {
-                meanEdge[k] += edges[k]
+                meanEdge[k] += sanitizeUnit(edges[k])
             }
         }
         for (k in 0 until EDGE_MASK_TOTAL) {
@@ -279,8 +281,12 @@ class ProgramFingerprintCache {
         for (i in baseline.indices) {
             val edges = baseline[i].cornerEdgeMasks
             val limit = min(EDGE_MASK_TOTAL, edges.size)
-            for (k in 0 until EDGE_MASK_TOTAL) {
-                val d = edges[k] - meanEdge[k]
+            for (k in 0 until limit) {
+                val d = sanitizeUnit(edges[k]) - meanEdge[k]
+                varEdge[k] += d * d
+            }
+            for (k in limit until EDGE_MASK_TOTAL) {
+                val d = -meanEdge[k]
                 varEdge[k] += d * d
             }
         }
@@ -294,12 +300,23 @@ class ProgramFingerprintCache {
         var lbSum = 0f
         var pbSum = 0f
         for (i in baseline.indices) {
-            lbSum += baseline[i].letterboxRatio
-            pbSum += baseline[i].pillarboxRatio
+            lbSum += sanitizeUnit(baseline[i].letterboxRatio)
+            pbSum += sanitizeUnit(baseline[i].pillarboxRatio)
         }
         frozenLetterbox = lbSum / baselineCount
         frozenPillarbox = pbSum / baselineCount
         hasFrozenAspect = true
+
+        // Re-seed live EMAs and variance from the rolled-back baseline so break-entry frames do not linger after unfreeze().
+        for (k in 0 until EDGE_MASK_TOTAL) {
+            liveCornerEdgeEma[k] = meanEdge[k]
+            liveCornerEdgeVar[k] = varEdge[k]
+        }
+        liveEdgeFrameCount = baseline.size
+        liveCornerStrength = frozenCornerStrength.copyOf()
+        liveLetterboxEma = frozenLetterbox
+        livePillarboxEma = frozenPillarbox
+        liveAspectCount = baseline.size
 
         isFrozenState = true
     }
@@ -363,14 +380,14 @@ class ProgramFingerprintCache {
             }
 
             return ProgramMatchResult(
-                prototypeSimilarity = maxProtoSim,
-                bugSimilarity = bestBugSim,
+                prototypeSimilarity = sanitizeUnit(maxProtoSim),
+                bugSimilarity = sanitizeUnit(bestBugSim),
                 hasStableBug = anyStable,
                 isBaselineReady = true,
                 isFrozen = true,
-                logoMaskStrength = edgeResult.logoMaskStrength,
-                logoDropoutScore = edgeResult.logoDropoutScore,
-                aspectRatioShift = edgeResult.aspectRatioShift
+                logoMaskStrength = sanitizeUnit(edgeResult.logoMaskStrength),
+                logoDropoutScore = sanitizeUnit(edgeResult.logoDropoutScore),
+                aspectRatioShift = sanitizeUnit(edgeResult.aspectRatioShift)
             )
         }
 
@@ -424,14 +441,14 @@ class ProgramFingerprintCache {
         }
 
         return ProgramMatchResult(
-            prototypeSimilarity = maxProtoSim,
-            bugSimilarity = bestBugSim,
+            prototypeSimilarity = sanitizeUnit(maxProtoSim),
+            bugSimilarity = sanitizeUnit(bestBugSim),
             hasStableBug = anyStable,
             isBaselineReady = true,
             isFrozen = false,
-            logoMaskStrength = edgeResult.logoMaskStrength,
-            logoDropoutScore = edgeResult.logoDropoutScore,
-            aspectRatioShift = edgeResult.aspectRatioShift
+            logoMaskStrength = sanitizeUnit(edgeResult.logoMaskStrength),
+            logoDropoutScore = sanitizeUnit(edgeResult.logoDropoutScore),
+            aspectRatioShift = sanitizeUnit(edgeResult.aspectRatioShift)
         )
     }
 
@@ -486,6 +503,9 @@ class ProgramFingerprintCache {
         val aspectRatioShift: Float
     )
 
+    private fun sanitizeUnit(value: Float): Float =
+        if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+
     private fun computeCornerEdgeStrengths(mask: FloatArray, variance: FloatArray): FloatArray {
         val strengths = FloatArray(EDGE_CORNERS)
         for (c in 0 until EDGE_CORNERS) {
@@ -494,19 +514,20 @@ class ProgramFingerprintCache {
             var peak = 0f
             var weightedVarSum = 0f
             for (k in 0 until CORNER_CELLS) {
-                val m = mask[base + k]
+                val m = sanitizeUnit(mask[base + k])
+                val v = if (variance[base + k].isFinite()) variance[base + k].coerceAtLeast(0f) else 0f
                 sum += m
                 if (m > peak) peak = m
-                weightedVarSum += m * variance[base + k]
+                weightedVarSum += m * v
             }
             val meanEdge = sum / CORNER_CELLS.toFloat()
             val weightedVar = if (sum > 1e-4f) weightedVarSum / sum else 1f
-            if (peak < EDGE_MIN_PEAK || meanEdge < EDGE_MIN_MEAN || weightedVar >= BUG_MAX_MEAN_VARIANCE) {
+            if (!weightedVar.isFinite() || peak < EDGE_MIN_PEAK || meanEdge < EDGE_MIN_MEAN || weightedVar >= BUG_MAX_MEAN_VARIANCE) {
                 strengths[c] = 0f
             } else {
-                val energy = ((meanEdge / 0.15f) * 0.5f + (peak / 0.40f) * 0.5f).coerceIn(0f, 1f)
-                val stability = (1f - weightedVar / BUG_MAX_MEAN_VARIANCE).coerceIn(0f, 1f)
-                strengths[c] = (energy * stability).coerceIn(0f, 1f)
+                val energy = sanitizeUnit((meanEdge / 0.15f) * 0.5f + (peak / 0.40f) * 0.5f)
+                val stability = sanitizeUnit(1f - weightedVar / BUG_MAX_MEAN_VARIANCE)
+                strengths[c] = sanitizeUnit(energy * stability)
             }
         }
         return strengths
@@ -523,12 +544,13 @@ class ProgramFingerprintCache {
         var bestCorner = 0
         var logoMaskStrength = 0f
         for (c in 0 until EDGE_CORNERS) {
-            if (cornerStrengths[c] > logoMaskStrength) {
-                logoMaskStrength = cornerStrengths[c]
+            val s = sanitizeUnit(cornerStrengths[c])
+            if (s > logoMaskStrength) {
+                logoMaskStrength = s
                 bestCorner = c
             }
         }
-        logoMaskStrength = logoMaskStrength.coerceIn(0f, 1f)
+        logoMaskStrength = sanitizeUnit(logoMaskStrength)
 
         val logoPresence: Float
         val logoDropoutScore: Float
@@ -541,19 +563,19 @@ class ProgramFingerprintCache {
             var normT = 0.0
             var normF = 0.0
             for (k in 0 until CORNER_CELLS) {
-                val t = maskTemplate[base + k]
-                val f = if (base + k < frameEdges.size) frameEdges[base + k] else 0f
+                val t = sanitizeUnit(maskTemplate[base + k])
+                val f = if (base + k < frameEdges.size) sanitizeUnit(frameEdges[base + k]) else 0f
                 templateSum += t
                 minSum += min(t, f)
                 dot += t * f
                 normT += t * t
                 normF += f * f
             }
-            val coverage = if (templateSum > 1e-4f) (minSum / templateSum).coerceIn(0f, 1f) else 0f
+            val coverage = if (templateSum > 1e-4f) sanitizeUnit(minSum / templateSum) else 0f
             val denom = sqrt(normT) * sqrt(normF)
-            val cosine = if (denom > 1e-4) (dot / denom).toFloat().coerceIn(0f, 1f) else 0f
-            logoPresence = (coverage * cosine).coerceIn(0f, 1f)
-            logoDropoutScore = (logoMaskStrength * (1f - logoPresence)).coerceIn(0f, 1f)
+            val cosine = if (denom > 1e-4 && denom.isFinite()) sanitizeUnit((dot / denom).toFloat()) else 0f
+            logoPresence = sanitizeUnit(coverage * cosine)
+            logoDropoutScore = sanitizeUnit(logoMaskStrength * (1f - logoPresence))
         } else {
             logoPresence = 0f
             logoDropoutScore = 0f
@@ -562,8 +584,11 @@ class ProgramFingerprintCache {
         val aspectRatioShift = if (descriptor.isBlackFrame || !aspectReady) {
             0f
         } else {
-            ((abs(descriptor.letterboxRatio - baseLb) + abs(descriptor.pillarboxRatio - basePb)) / ASPECT_SHIFT_NORM)
-                .coerceIn(0f, 1f)
+            val lb = sanitizeUnit(descriptor.letterboxRatio)
+            val pb = sanitizeUnit(descriptor.pillarboxRatio)
+            val safeBaseLb = sanitizeUnit(baseLb)
+            val safeBasePb = sanitizeUnit(basePb)
+            sanitizeUnit((abs(lb - safeBaseLb) + abs(pb - safeBasePb)) / ASPECT_SHIFT_NORM)
         }
 
         return EdgeAspectScore(
@@ -588,7 +613,7 @@ class ProgramFingerprintCache {
             val roi = selector(frames[i])
             val limit = min(CORNER_CELLS, roi.size)
             for (c in 0 until limit) {
-                mean[c] += roi[c]
+                mean[c] += sanitizeUnit(roi[c])
             }
         }
         for (c in 0 until CORNER_CELLS) {
@@ -606,7 +631,7 @@ class ProgramFingerprintCache {
             var sqDiff = 0.0
             for (i in 0 until count) {
                 val roi = selector(frames[i])
-                val v = if (c < roi.size) roi[c] else 0f
+                val v = if (c < roi.size) sanitizeUnit(roi[c]) else 0f
                 val d = v - cellMean
                 sqDiff += d * d
             }
@@ -615,7 +640,7 @@ class ProgramFingerprintCache {
 
         val meanVariance = (varSum / CORNER_CELLS.toDouble()).toFloat()
         val contrast = (maxCell - minCell).coerceAtLeast(0f)
-        val hasBug = meanVariance < BUG_MAX_MEAN_VARIANCE && contrast >= BUG_MIN_CONTRAST
+        val hasBug = meanVariance.isFinite() && meanVariance < BUG_MAX_MEAN_VARIANCE && contrast >= BUG_MIN_CONTRAST
         return CornerBugStats(template = mean, hasStableBug = hasBug)
     }
 }
