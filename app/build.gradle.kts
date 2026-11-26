@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.commercialkiller"
         minSdk = 24
         targetSdk = 36
-        versionCode = 18
-        versionName = "2.6"
+        versionCode = 19
+        versionName = "2.7"
     }
 
     buildTypes {
@@ -43,6 +43,15 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.systemProperty("runBroadcastEval", providers.systemProperty("runBroadcastEval").getOrElse("false"))
+            it.systemProperty("broadcastEvalOut", providers.systemProperty("broadcastEvalOut").getOrElse(""))
+            if (providers.systemProperty("runBroadcastEval").getOrElse("false") == "true") {
+                it.testLogging {
+                    showStandardStreams = true
+                }
+            }
+        }
     }
 }
 

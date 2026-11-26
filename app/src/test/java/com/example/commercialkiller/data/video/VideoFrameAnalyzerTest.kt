@@ -2,6 +2,7 @@
 package com.example.commercialkiller.data.video
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -109,5 +110,86 @@ class VideoFrameAnalyzerTest {
             "Expected dark studio vs bright beige commercial similarity < 0.55f, got $sim",
             sim < 0.55f
         )
+    }
+
+    @Test
+    fun `cornerEdgeMasks populates top-left cells only and solid frame stays zero`() {
+        val width = 64
+        val height = 36
+        val solid = filledFrame(0xFF223344.toInt(), width, height)
+        val solidDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(solid, width, height, 100L, null)
+        for (i in 0 until 64) {
+            assertEquals("Expected zero edge at index $i on solid frame", 0f, solidDesc.cornerEdgeMasks[i], 0.0001f)
+        }
+
+        val withTopLeftBox = solid.copyOf()
+        for (y in 2 until 7) {
+            for (x in 2 until 12) {
+                withTopLeftBox[y * width + x] = 0xFFFFFFFF.toInt()
+            }
+        }
+        val boxDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(withTopLeftBox, width, height, 250L, solidDesc)
+        val tlSum = (0 until 16).sumOf { boxDesc.cornerEdgeMasks[it].toDouble() }.toFloat()
+        assertTrue("Expected positive TL edge mask sum, got $tlSum", tlSum > 0.5f)
+        for (i in 16 until 64) {
+            assertEquals("Expected zero edge in TR/BL/BR at index $i", 0f, boxDesc.cornerEdgeMasks[i], 0.0001f)
+        }
+
+        val shiftedBox = boxDesc.copy(letterboxRatio = 0.25f)
+        val shiftedPillar = boxDesc.copy(pillarboxRatio = 0.25f)
+        val modifiedMask = boxDesc.cornerEdgeMasks.copyOf().also { it[0] = (it[0] + 0.1f).coerceAtMost(1f) }
+        val shiftedEdge = boxDesc.copy(cornerEdgeMasks = modifiedMask)
+        assertNotEquals(boxDesc, shiftedBox)
+        assertNotEquals(boxDesc, shiftedPillar)
+        assertNotEquals(boxDesc, shiftedEdge)
+        assertNotEquals(boxDesc.hashCode(), shiftedEdge.hashCode())
+    }
+
+    @Test
+    fun `letterboxRatio and pillarboxRatio detect symmetric bars and reject black or single-side frames`() {
+        val width = 64
+        val height = 36
+
+        // Symmetric 6-row top+bottom black bars -> 12 / 36 = 0.3333f
+        val letterbox = filledFrame(0xFF708090.toInt(), width, height)
+        for (y in 0 until 6) {
+            for (x in 0 until width) {
+                letterbox[y * width + x] = 0xFF000000.toInt()
+                letterbox[(height - 1 - y) * width + x] = 0xFF000000.toInt()
+            }
+        }
+        val lbDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(letterbox, width, height, 100L, null)
+        assertEquals(12f / 36f, lbDesc.letterboxRatio, 0.001f)
+        assertEquals(0f, lbDesc.pillarboxRatio, 0.001f)
+
+        // Symmetric 8-col left+right black bars -> 16 / 64 = 0.25f
+        val pillarbox = filledFrame(0xFF708090.toInt(), width, height)
+        for (y in 0 until height) {
+            for (x in 0 until 8) {
+                pillarbox[y * width + x] = 0xFF000000.toInt()
+                pillarbox[y * width + (width - 1 - x)] = 0xFF000000.toInt()
+            }
+        }
+        val pbDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(pillarbox, width, height, 200L, null)
+        assertEquals(0f, pbDesc.letterboxRatio, 0.001f)
+        assertEquals(16f / 64f, pbDesc.pillarboxRatio, 0.001f)
+
+        // Asymmetric single-side bar -> 0f
+        val topOnly = filledFrame(0xFF708090.toInt(), width, height)
+        for (y in 0 until 6) {
+            for (x in 0 until width) {
+                topOnly[y * width + x] = 0xFF000000.toInt()
+            }
+        }
+        val topOnlyDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(topOnly, width, height, 300L, null)
+        assertEquals(0f, topOnlyDesc.letterboxRatio, 0.001f)
+        assertEquals(0f, topOnlyDesc.pillarboxRatio, 0.001f)
+
+        // Full black frame -> 0f for both
+        val allBlack = filledFrame(0xFF000000.toInt(), width, height)
+        val blackDesc = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(allBlack, width, height, 400L, null)
+        assertTrue(blackDesc.isBlackFrame)
+        assertEquals(0f, blackDesc.letterboxRatio, 0.001f)
+        assertEquals(0f, blackDesc.pillarboxRatio, 0.001f)
     }
 }

@@ -894,7 +894,11 @@ class AudioWorkbenchEngine(
                             bugSimilarity = match?.bugSimilarity ?: 0f,
                             cutsPerMin = maxOf(decision.cutCadencePerMin, decision.visualCutCadencePerMin),
                             topTags = tags,
-                            isTvMuted = isTvCurrentlyMuted
+                            isTvMuted = isTvCurrentlyMuted,
+                            logoDropoutScore = decision.broadcastCues.logoDropoutScore,
+                            blackSilencePulse = decision.broadcastCues.blackSilencePulse,
+                            aspectRatioShift = decision.broadcastCues.aspectRatioShift,
+                            repeatAdDistance = decision.broadcastCues.repeatAdDistance
                         ),
                         onErrorOrEmpty = { latencyMs ->
                             pendingVetoMuteStartMs = null
@@ -989,7 +993,11 @@ class AudioWorkbenchEngine(
                         bugSimilarity = match?.bugSimilarity ?: 0f,
                         cutsPerMin = maxOf(effectiveDecision.cutCadencePerMin, effectiveDecision.visualCutCadencePerMin),
                         topTags = tags,
-                        isTvMuted = mutedBeforeEval
+                        isTvMuted = mutedBeforeEval,
+                        logoDropoutScore = effectiveDecision.broadcastCues.logoDropoutScore,
+                        blackSilencePulse = effectiveDecision.broadcastCues.blackSilencePulse,
+                        aspectRatioShift = effectiveDecision.broadcastCues.aspectRatioShift,
+                        repeatAdDistance = effectiveDecision.broadcastCues.repeatAdDistance
                     )
                 ) { verdict, latencyMs ->
                     val withVerdict = segmentTracker.attachStage2Verdict(openedSegment.id, verdict.name)

@@ -43,7 +43,11 @@ data class Stage2TransitionFeatures(
     val bugSimilarity: Float,
     val cutsPerMin: Float,
     val topTags: List<String>,
-    val isTvMuted: Boolean
+    val isTvMuted: Boolean,
+    val logoDropoutScore: Float = 0f,
+    val blackSilencePulse: Float = 0f,
+    val aspectRatioShift: Float = 0f,
+    val repeatAdDistance: Float = 1f
 )
 
 /**
@@ -125,10 +129,18 @@ class LiteRtLmDecisionVerifier(
                 else -> "none"
             }
             val programReturn = features.isTvMuted &&
-                (features.prototypeSimilarity >= 0.55f || (features.hasStableBug && features.bugSimilarity >= 0.75f))
+                (features.prototypeSimilarity >= 0.55f || (features.hasStableBug && features.bugSimilarity >= 0.75f)) &&
+                features.aspectRatioShift < 0.50f &&
+                features.repeatAdDistance > 0.25f
             val silentRoom = !features.isTvMuted && features.mediaScore < 0.40f
-            val commercialBreak = !features.isTvMuted &&
-                (features.commercialScore >= 0.70f || (features.visualChangeScore >= 0.30f && features.prototypeSimilarity < 0.65f))
+            val commercialBreak = !features.isTvMuted && (
+                features.commercialScore >= 0.70f ||
+                    (features.visualChangeScore >= 0.30f && features.prototypeSimilarity < 0.65f) ||
+                    features.blackSilencePulse >= 0.45f ||
+                    features.logoDropoutScore >= 0.50f ||
+                    features.aspectRatioShift >= 0.45f ||
+                    features.repeatAdDistance <= 0.25f
+                )
             val summary = when {
                 programReturn ->
                     "Main TV show program is actively playing on screen with matching video scene and channel logo"
@@ -142,7 +154,7 @@ class LiteRtLmDecisionVerifier(
             val noThinkSuffix = if (noThink) " /no_think" else ""
             return String.format(
                 Locale.US,
-                "Status: %s (media=%.2f comm=%.2f dv=%.2f proto=%.2f bugStable=%s bugSim=%.2f cuts=%.1f muted=%s tags=[%s]). Classify as COMMERCIAL, PROGRAM, or SILENCE.%s",
+                "Status: %s (media=%.2f comm=%.2f dv=%.2f proto=%.2f bugStable=%s bugSim=%.2f cuts=%.1f muted=%s logoDrop=%.2f blkSil=%.2f arShift=%.2f repDist=%.2f tags=[%s]). Classify as COMMERCIAL, PROGRAM, or SILENCE.%s",
                 summary,
                 features.mediaScore,
                 features.commercialScore,
@@ -152,6 +164,10 @@ class LiteRtLmDecisionVerifier(
                 features.bugSimilarity,
                 features.cutsPerMin,
                 features.isTvMuted,
+                features.logoDropoutScore,
+                features.blackSilencePulse,
+                features.aspectRatioShift,
+                features.repeatAdDistance,
                 tagsText,
                 noThinkSuffix
             )

@@ -20,7 +20,10 @@ data class VisualFrameDescriptor(
     val cornerRoiLuma: FloatArray = FloatArray(16),
     val bottomLeftRoiLuma: FloatArray = FloatArray(16),
     val isBlackFrame: Boolean = false,
-    val visualChangeScore: Float = 0f
+    val visualChangeScore: Float = 0f,
+    val cornerEdgeMasks: FloatArray = FloatArray(64),
+    val letterboxRatio: Float = 0f,
+    val pillarboxRatio: Float = 0f
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -32,7 +35,10 @@ data class VisualFrameDescriptor(
             cornerRoiLuma.contentEquals(other.cornerRoiLuma) &&
             bottomLeftRoiLuma.contentEquals(other.bottomLeftRoiLuma) &&
             isBlackFrame == other.isBlackFrame &&
-            visualChangeScore == other.visualChangeScore
+            visualChangeScore == other.visualChangeScore &&
+            cornerEdgeMasks.contentEquals(other.cornerEdgeMasks) &&
+            letterboxRatio == other.letterboxRatio &&
+            pillarboxRatio == other.pillarboxRatio
     }
 
     override fun hashCode(): Int {
@@ -44,6 +50,9 @@ data class VisualFrameDescriptor(
         result = 31 * result + bottomLeftRoiLuma.contentHashCode()
         result = 31 * result + isBlackFrame.hashCode()
         result = 31 * result + visualChangeScore.hashCode()
+        result = 31 * result + cornerEdgeMasks.contentHashCode()
+        result = 31 * result + letterboxRatio.hashCode()
+        result = 31 * result + pillarboxRatio.hashCode()
         return result
     }
 }
@@ -82,12 +91,20 @@ object VideoFrameAnalyzer {
         val roiCounts = IntArray(16)
         val bottomLeftRoiLuma = FloatArray(16)
         val leftRoiCounts = IntArray(16)
+        val lumaBuffer = FloatArray(width * height)
+        val rowLumaSum = FloatArray(height)
+        val rowLumaMax = FloatArray(height)
+        val colLumaSum = FloatArray(width)
+        val colLumaMax = FloatArray(width)
+        val cornerEdgeMasks = FloatArray(64)
+        val cornerEdgeCounts = IntArray(64)
 
         val roiStartX = (width * 3) / 4
         val roiStartY = (height * 3) / 4
         val roiWidth = (width - roiStartX).coerceAtLeast(1)
         val roiHeight = (height - roiStartY).coerceAtLeast(1)
         val leftEndX = (width / 4).coerceAtLeast(1)
+        val topEndY = (height / 4).coerceAtLeast(1)
 
         var totalLuma = 0.0
 
@@ -105,6 +122,11 @@ object VideoFrameAnalyzer {
 
                 val luma = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
                 totalLuma += luma
+                lumaBuffer[rowOffset + x] = luma
+                rowLumaSum[y] += luma
+                if (luma > rowLumaMax[y]) rowLumaMax[y] = luma
+                colLumaSum[x] += luma
+                if (luma > colLumaMax[x]) colLumaMax[x] = luma
 
                 val gridX = ((x * 4) / width).coerceIn(0, 3)
                 val gridIdx = gridY * 4 + gridX
@@ -142,6 +164,99 @@ object VideoFrameAnalyzer {
             colorHistogram[i] /= totalPixels
         }
 
+        // Cue 1: 4-corner static edge logo mask (TL=0..15, TR=16..31, BL=32..47, BR=48..63)
+        for (y in 0 until height) {
+            val inTop = y < topEndY
+            val inBottom = y >= roiStartY
+            if (!inTop && !inBottom) continue
+            val rowOffset = y * width
+            val nyOffset = (if (y + 1 < height) y + 1 else y) * width
+            val topCellY = if (inTop) ((y * 4) / topEndY).coerceIn(0, 3) else 0
+            val botCellY = if (inBottom) (((y - roiStartY) * 4) / roiHeight).coerceIn(0, 3) else 0
+
+            for (x in 0 until width) {
+                val inLeft = x < leftEndX
+                val inRight = x >= roiStartX
+                if (!inLeft && !inRight) continue
+                val nx = if (x + 1 < width) x + 1 else x
+                val center = lumaBuffer[rowOffset + x]
+                val edge = (abs(lumaBuffer[rowOffset + nx] - center) + abs(lumaBuffer[nyOffset + x] - center)) * 0.5f
+
+                if (inTop && inLeft) {
+                    val idx = topCellY * 4 + ((x * 4) / leftEndX).coerceIn(0, 3)
+                    cornerEdgeMasks[idx] += edge
+                    cornerEdgeCounts[idx]++
+                }
+                if (inTop && inRight) {
+                    val idx = 16 + topCellY * 4 + (((x - roiStartX) * 4) / roiWidth).coerceIn(0, 3)
+                    cornerEdgeMasks[idx] += edge
+                    cornerEdgeCounts[idx]++
+                }
+                if (inBottom && inLeft) {
+                    val idx = 32 + botCellY * 4 + ((x * 4) / leftEndX).coerceIn(0, 3)
+                    cornerEdgeMasks[idx] += edge
+                    cornerEdgeCounts[idx]++
+                }
+                if (inBottom && inRight) {
+                    val idx = 48 + botCellY * 4 + (((x - roiStartX) * 4) / roiWidth).coerceIn(0, 3)
+                    cornerEdgeMasks[idx] += edge
+                    cornerEdgeCounts[idx]++
+                }
+            }
+        }
+        for (i in 0 until 64) {
+            if (cornerEdgeCounts[i] > 0) {
+                cornerEdgeMasks[i] = ((cornerEdgeMasks[i] / cornerEdgeCounts[i].toFloat()) * 4f).coerceIn(0f, 1f)
+            }
+        }
+
+        // Cue 3: Symmetric letterbox and pillarbox ratios (suppressed on full black frames)
+        val isBlack = meanLuma < 0.08f
+        val letterboxRatio: Float
+        val pillarboxRatio: Float
+        if (isBlack) {
+            letterboxRatio = 0f
+            pillarboxRatio = 0f
+        } else {
+            val maxBarRows = height / 3
+            var topBars = 0
+            for (y in 0 until maxBarRows) {
+                if ((rowLumaSum[y] / width.toFloat()) < 0.06f && rowLumaMax[y] < 0.14f) {
+                    topBars++
+                } else {
+                    break
+                }
+            }
+            var bottomBars = 0
+            for (y in height - 1 downTo height - maxBarRows) {
+                if ((rowLumaSum[y] / width.toFloat()) < 0.06f && rowLumaMax[y] < 0.14f) {
+                    bottomBars++
+                } else {
+                    break
+                }
+            }
+            letterboxRatio = ((minOf(topBars, bottomBars) * 2).toFloat() / height.toFloat()).coerceIn(0f, 1f)
+
+            val maxBarCols = width / 3
+            var leftBars = 0
+            for (x in 0 until maxBarCols) {
+                if ((colLumaSum[x] / height.toFloat()) < 0.06f && colLumaMax[x] < 0.14f) {
+                    leftBars++
+                } else {
+                    break
+                }
+            }
+            var rightBars = 0
+            for (x in width - 1 downTo width - maxBarCols) {
+                if ((colLumaSum[x] / height.toFloat()) < 0.06f && colLumaMax[x] < 0.14f) {
+                    rightBars++
+                } else {
+                    break
+                }
+            }
+            pillarboxRatio = ((minOf(leftBars, rightBars) * 2).toFloat() / width.toFloat()).coerceIn(0f, 1f)
+        }
+
         val changeScore = if (previous != null) {
             val lumaDist = lumaL1Distance(lumaGrid, previous.lumaGrid)
             val histDist = histogramL1Distance(colorHistogram, previous.colorHistogram)
@@ -158,8 +273,11 @@ object VideoFrameAnalyzer {
             colorHistogram = colorHistogram,
             cornerRoiLuma = cornerRoiLuma,
             bottomLeftRoiLuma = bottomLeftRoiLuma,
-            isBlackFrame = meanLuma < 0.08f,
-            visualChangeScore = changeScore
+            isBlackFrame = isBlack,
+            visualChangeScore = changeScore,
+            cornerEdgeMasks = cornerEdgeMasks,
+            letterboxRatio = letterboxRatio,
+            pillarboxRatio = pillarboxRatio
         )
     }
 

@@ -98,4 +98,66 @@ class LiteRtLmDecisionVerifierTest {
         assertTrue(returnPrompt.contains("tags=[video-only]"))
         assertTrue(!returnPrompt.contains("tags=[Silence]"))
     }
+
+    @Test
+    fun `buildPrompt formats Cue 1-4 telemetry and updates commercialBreak and programReturn conditions`() {
+        val cuePrompt = LiteRtLmDecisionVerifier.buildPrompt(
+            Stage2TransitionFeatures(
+                mediaScore = 0.88f,
+                commercialScore = 0.62f,
+                visualChangeScore = 0.15f,
+                prototypeSimilarity = 0.70f,
+                hasStableBug = true,
+                bugSimilarity = 0.35f,
+                cutsPerMin = 6.0f,
+                topTags = listOf("Speech"),
+                isTvMuted = false,
+                logoDropoutScore = 0.64f,
+                blackSilencePulse = 0.52f,
+                aspectRatioShift = 0.48f,
+                repeatAdDistance = 0.18f
+            ),
+            noThink = true
+        )
+        assertTrue(cuePrompt.contains("logoDrop=0.64"))
+        assertTrue(cuePrompt.contains("blkSil=0.52"))
+        assertTrue(cuePrompt.contains("arShift=0.48"))
+        assertTrue(cuePrompt.contains("repDist=0.18"))
+        assertTrue(cuePrompt.contains("commercial break"))
+        assertTrue(cuePrompt.endsWith("/no_think"))
+
+        val blockedReturnAspect = LiteRtLmDecisionVerifier.buildPrompt(
+            Stage2TransitionFeatures(
+                mediaScore = 1.00f,
+                commercialScore = 0.25f,
+                visualChangeScore = 0.10f,
+                prototypeSimilarity = 0.65f,
+                hasStableBug = true,
+                bugSimilarity = 0.82f,
+                cutsPerMin = 2.0f,
+                topTags = listOf("Silence"),
+                isTvMuted = true,
+                aspectRatioShift = 0.60f,
+                repeatAdDistance = 0.90f
+            )
+        )
+        assertTrue(!blockedReturnAspect.contains("matching video scene and channel logo"))
+
+        val blockedReturnRepeat = LiteRtLmDecisionVerifier.buildPrompt(
+            Stage2TransitionFeatures(
+                mediaScore = 1.00f,
+                commercialScore = 0.25f,
+                visualChangeScore = 0.10f,
+                prototypeSimilarity = 0.65f,
+                hasStableBug = true,
+                bugSimilarity = 0.82f,
+                cutsPerMin = 2.0f,
+                topTags = listOf("Silence"),
+                isTvMuted = true,
+                aspectRatioShift = 0.10f,
+                repeatAdDistance = 0.15f
+            )
+        )
+        assertTrue(!blockedReturnRepeat.contains("matching video scene and channel logo"))
+    }
 }

@@ -718,4 +718,173 @@ class FrameDecisionEngineTest {
         assertTrue("Expected restored angle or prototype similarity >= 0.78, got ${postDecision.bestAngleSimilarity}", postDecision.isKnownSceneAngle)
         assertTrue("Expected post-unmute returned show not to MUTE", postDecision.recommendedAction != TvActionDecision.MUTE)
     }
+
+    private fun topLeftLogoDescriptor(
+        interiorArgb: Int,
+        withTopLeftLogo: Boolean,
+        letterboxRows: Int = 0,
+        pillarboxCols: Int = 0,
+        timestampMs: Long,
+        previous: VisualFrameDescriptor? = null
+    ): VisualFrameDescriptor {
+        val width = 64
+        val height = 36
+        val pixels = IntArray(width * height) { interiorArgb }
+        if (withTopLeftLogo) {
+            for (y in 1 until 8) {
+                for (x in 1 until 14) {
+                    pixels[y * width + x] = if (y in 2..6 && x in 2..12) 0xFFFFFFFF.toInt() else 0xFF10141C.toInt()
+                }
+            }
+        }
+        for (y in 0 until letterboxRows) {
+            for (x in 0 until width) {
+                pixels[y * width + x] = 0xFF000000.toInt()
+                pixels[(height - 1 - y) * width + x] = 0xFF000000.toInt()
+            }
+        }
+        for (y in 0 until height) {
+            for (x in 0 until pillarboxCols) {
+                pixels[y * width + x] = 0xFF000000.toInt()
+                pixels[y * width + (width - 1 - x)] = 0xFF000000.toInt()
+            }
+        }
+        return VideoFrameAnalyzer.computeDescriptorFromArgbPixels(pixels, width, height, timestampMs, previous)
+    }
+
+    @Test
+    fun `blackSilencePulse triggers after broadcast media decays over 2s and stays zero when muted or prolonged`() {
+        val engine = FrameDecisionEngine()
+        val mediaVec = speechFormantVector(80)
+        val silenceVec = FloatArray(80) { 0.01f }
+        val brightFrame = topLeftLogoDescriptor(0xFF335577.toInt(), withTopLeftLogo = false, timestampMs = 0L)
+        val darkFrame = VideoFrameAnalyzer.computeDescriptorFromArgbPixels(IntArray(64 * 36) { 0xFF020202.toInt() }, 64, 36, 1_000L)
+
+        // Startup silence without prior media keeps blackSilencePulse == 0
+        val startupSilence = engine.evaluateFrame(silenceVec, silenceTags(), 0f, 100L, darkFrame.copy(timestampMs = 100L), isTvMuted = false)
+        assertEquals(0f, startupSilence.broadcastCues.blackSilencePulse, 0.001f)
+
+        // Broadcast media plays for 500 ms
+        for (step in 1..5) {
+            val t = 500L + step * 100L
+            engine.evaluateFrame(mediaVec, speechTags(), 0.02f, t, brightFrame.copy(timestampMs = t), isTvMuted = false)
+        }
+
+        // Fade to black + silence at t = 1_100 ms -> pulse > 0.50
+        val fadePulse = engine.evaluateFrame(silenceVec, silenceTags(), 0.05f, 1_100L, darkFrame.copy(timestampMs = 1_100L), isTvMuted = false)
+        assertTrue("Expected blackSilencePulse > 0.50 on black+silence fade, got ${fadePulse.broadcastCues.blackSilencePulse}", fadePulse.broadcastCues.blackSilencePulse > 0.50f)
+
+        // Subsequent bright ad frame decays linearly over 2_000 ms
+        val at1s = engine.evaluateFrame(mediaVec, speechTags(), 0.02f, 2_100L, brightFrame.copy(timestampMs = 2_100L), isTvMuted = false)
+        assertTrue("Expected decayed pulse around half peak at +1s, got ${at1s.broadcastCues.blackSilencePulse}", at1s.broadcastCues.blackSilencePulse in 0.20f..0.70f)
+        val at2s = engine.evaluateFrame(mediaVec, speechTags(), 0.02f, 3_100L, brightFrame.copy(timestampMs = 3_100L), isTvMuted = false)
+        assertEquals(0f, at2s.broadcastCues.blackSilencePulse, 0.001f)
+
+        // Prolonged non-media silence >= 20 frames clears pulse
+        engine.evaluateFrame(silenceVec, silenceTags(), 0.05f, 3_200L, darkFrame.copy(timestampMs = 3_200L), isTvMuted = false)
+        var lastProlonged = at2s
+        for (f in 1..20) {
+            val t = 3_200L + f * 100L
+            lastProlonged = engine.evaluateFrame(silenceVec, silenceTags(), 0f, t, darkFrame.copy(timestampMs = t), isTvMuted = false)
+        }
+        assertEquals(0f, lastProlonged.broadcastCues.blackSilencePulse, 0.001f)
+
+        // AUDIO_ONLY and VIDEO_ONLY_MUTED keep blackSilencePulse == 0
+        val audioOnly = engine.evaluateFrame(silenceVec, silenceTags(), 0f, 5_300L, visualDescriptor = null, isTvMuted = false)
+        assertEquals(0f, audioOnly.broadcastCues.blackSilencePulse, 0.001f)
+        val muted = engine.evaluateFrame(silenceVec, silenceTags(), 0f, 5_400L, darkFrame.copy(timestampMs = 5_400L), isTvMuted = true)
+        assertEquals(0f, muted.broadcastCues.blackSilencePulse, 0.001f)
+
+        // reset() / onManualUnmute() clear pulse
+        engine.evaluateFrame(mediaVec, speechTags(), 0.02f, 6_000L, brightFrame.copy(timestampMs = 6_000L), isTvMuted = false)
+        val reTrigger = engine.evaluateFrame(silenceVec, silenceTags(), 0.05f, 6_100L, darkFrame.copy(timestampMs = 6_100L), isTvMuted = false)
+        assertTrue(reTrigger.broadcastCues.blackSilencePulse > 0.50f)
+        engine.onManualUnmute()
+        val postManual = engine.evaluateFrame(mediaVec, speechTags(), 0.02f, 6_200L, brightFrame.copy(timestampMs = 6_200L), isTvMuted = false)
+        assertEquals(0f, postManual.broadcastCues.blackSilencePulse, 0.001f)
+    }
+
+    @Test
+    fun `AUDIO_ONLY boosts commercialScore when repeat ad matches earlier pod`() {
+        val engine = FrameDecisionEngine()
+        val adVecA = FloatArray(80) { i -> if (i < 40) 0.55f else 0.15f }
+        val adVecB = FloatArray(80) { i -> if (i >= 40) 0.55f else 0.15f }
+        val borderlineTags = listOf(
+            ClassifierScore("Music Bed", 0.72f),
+            ClassifierScore("Broadcast Content", 0.55f),
+            ClassifierScore("Dialogue / Speech", 0.20f)
+        )
+
+        // Establish baseline commercial score without repeat history
+        val baseline = engine.evaluateCommercial(adVecB, borderlineTags, 0.10f, 0f).commercialScore
+
+        // Feed Pod 1 (0..2s), filler (2..11s), and repeat window 1 (11..12s)
+        for (step in 0 until 10) {
+            engine.evaluateFrame(adVecA, borderlineTags, 0.05f, step * 100L, null, false)
+        }
+        for (step in 10 until 20) {
+            engine.evaluateFrame(adVecB, borderlineTags, 0.05f, step * 100L, null, false)
+        }
+        val fillerVec = FloatArray(80) { 0.45f }
+        for (step in 20 until 110) {
+            engine.evaluateFrame(fillerVec, speechTags(), 0.02f, step * 100L, null, false)
+        }
+        for (step in 110 until 120) {
+            engine.evaluateFrame(adVecA, borderlineTags, 0.05f, step * 100L, null, false)
+        }
+
+        val repeatDecision = engine.evaluateFrame(adVecB, borderlineTags, 0.10f, 12_200L, null, false)
+        assertTrue("Expected repeatAdMatchScore > 0.5, got ${repeatDecision.broadcastCues.repeatAdMatchScore}", repeatDecision.broadcastCues.repeatAdMatchScore > 0.5f)
+        assertTrue("Expected AUDIO_ONLY commercialScore boost (${repeatDecision.commercialScore} > $baseline)", repeatDecision.commercialScore > baseline + 0.08f)
+    }
+
+    @Test
+    fun `AUDIO_VIDEO cues override known-angle dampening and VIDEO_ONLY_MUTED integrates cues 1 3 and 4`() {
+        val engine = FrameDecisionEngine()
+        val mediaVec = speechFormantVector(80)
+        var prevDesc: VisualFrameDescriptor? = null
+
+        // Build 12 frames (t = 0..2_750) of widescreen program with top-left edge logo
+        for (i in 0 until 12) {
+            val t = i * 250L
+            val d = topLeftLogoDescriptor(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = t, previous = prevDesc)
+            prevDesc = d
+            engine.evaluateFrame(mediaVec, speechTags(), 0.02f, t, d, isTvMuted = false)
+        }
+
+        // Known background color WITH aspectRatioShift (pillarbox) + logo dropout overrides known-angle dampening
+        val shiftedSameBg = topLeftLogoDescriptor(0xFF224466.toInt(), withTopLeftLogo = false, pillarboxCols = 8, timestampMs = 3_000L, previous = prevDesc)
+        val energeticTags = listOf(
+            ClassifierScore("Music / Sound Bed", 0.76f),
+            ClassifierScore("Broadcast Content", 0.60f),
+            ClassifierScore("Dialogue / Speech", 0.30f)
+        )
+        val baselineDamped = engine.evaluateFrame(
+            uniformVector(80, 0.72f),
+            energeticTags,
+            0.04f,
+            2_900L,
+            topLeftLogoDescriptor(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = 2_900L, previous = prevDesc),
+            isTvMuted = false
+        )
+        val overridden = engine.evaluateFrame(
+            uniformVector(80, 0.72f),
+            energeticTags,
+            0.04f,
+            3_000L,
+            shiftedSameBg,
+            isTvMuted = false
+        )
+        assertTrue("Expected cues to override dampening (${overridden.commercialScore} > ${baselineDamped.commercialScore})", overridden.commercialScore > baselineDamped.commercialScore + 0.10f)
+        assertTrue(overridden.broadcastCues.aspectRatioShift >= 0.80f)
+        assertTrue(overridden.broadcastCues.logoDropoutScore >= 0.50f)
+
+        // Freeze for break and test VIDEO_ONLY_MUTED: clean top-left logo frame returns high score, aspect shift reduces returnScore below 0.80
+        val cleanReturn = topLeftLogoDescriptor(0xFF224466.toInt(), withTopLeftLogo = true, timestampMs = 8_000L, previous = shiftedSameBg)
+        val mutedClean = engine.evaluateFrame(FloatArray(80) { 0.01f }, silenceTags(), 0f, 8_000L, cleanReturn, isTvMuted = true)
+        assertTrue("Expected high returnScore with top-left edge logo, got ${mutedClean.programReturnScore}", mutedClean.programReturnScore >= FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD)
+
+        val mutedShifted = engine.evaluateFrame(FloatArray(80) { 0.01f }, silenceTags(), 0f, 8_250L, shiftedSameBg.copy(timestampMs = 8_250L), isTvMuted = true)
+        assertTrue("Expected aspectRatioShift to block false unmute (${mutedShifted.programReturnScore} < 0.80)", mutedShifted.programReturnScore < FrameDecisionEngine.PROGRAM_RETURN_UNMUTE_THRESHOLD)
+    }
 }
